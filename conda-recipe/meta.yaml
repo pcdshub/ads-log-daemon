@@ -1,0 +1,36 @@
+
+{% set data = load_setup_py_data() %}
+
+
+package:
+    name    : ads_log_daemon
+
+    version : {{ data.get('version') }}
+
+
+source:
+    path: ..
+
+build:
+    number: 1
+    noarch: python
+
+requirements:
+    build:
+      - python >=3.6
+      - setuptools
+
+    run:
+      - python >=3.6
+
+test:
+    imports:
+      - ads_log_daemon
+
+    requires:
+      - pytest
+
+about:
+  home: https://github.com/pcdshub/ads-log-daemon
+  license: SLAC Open License
+  summary:  Daemon for translating TwinCAT ADS Logger messages to JSON for interpretation by [pcds-]logstash.

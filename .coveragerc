@@ -1,0 +1,11 @@
+[run]
+source =
+    ads_log_daemon
+[report]
+omit =
+    #versioning
+    .*version.*
+    *_version.py
+    #tests
+    *test*
+    ads_log_daemon/tests/*
