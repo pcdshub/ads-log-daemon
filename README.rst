@@ -9,7 +9,7 @@ ads-log-daemon
         :target: https://pypi.python.org/pypi/ads-log-daemon
 
 
- Daemon for translating TwinCAT ADS Logger messages to JSON for interpretation by [pcds-]logstash.
+Daemon for translating TwinCAT ADS Logger messages to JSON for interpretation by [pcds-]logstash.
 
 `Documentation <https://pcdshub.github.io/ads-log-daemon/>`_
 
