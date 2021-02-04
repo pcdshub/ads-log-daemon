@@ -1,8 +1,9 @@
+import asyncio
+import json
+
 import ads_async
 from ads_async import structs
 from ads_async.asyncio.client import AsyncioClient
-import asyncio
-import json
 
 
 def to_logstash(header: structs.AoEHeader,
