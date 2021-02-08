@@ -46,33 +46,40 @@ def to_logstash(
 
 
 async def test():
-    ads_async.log.configure(level="DEBUG")
+    handler = ads_async.log.configure(level="DEBUG")
 
-    async with Client(("localhost", 48898), our_net_id="172.21.148.164.1.1") as client:
-        circuit = client.get_circuit("172.21.148.227.1.1")
-        device_info = await circuit.get_device_information()
-        circuit.log.info("Device info: %s", device_info)
-        project_name = await circuit.get_project_name()
-        circuit.log.info("Project name: %s", project_name)
-        app_name = await circuit.get_app_name()
-        circuit.log.info("Application name: %s", app_name)
-        task_names = await circuit.get_task_names()
-        circuit.log.info("Task names: %s", task_names)
+    our_net_id = "172.21.148.164.1.1"
+    their_net_id = "172.21.148.227.1.1"
+    ip_and_port = ("localhost", 48898)
 
-        # Give some time for initial notifications, and prune any stale
-        # ones from previous sessions:
-        await asyncio.sleep(1.0)
-        await circuit.prune_unknown_notifications()
-        async for header, _, sample in circuit.enable_log_system():
-            try:
-                message = sample.as_log_message()
-            except Exception:
-                circuit.log.exception("Got a bad log message sample? %s", sample)
-                continue
+    # View only the circuit-level messages:
+    handler.addFilter(ads_async.log.AddressFilter(our_net_id, their_net_id))
 
-            circuit.log.info(
-                "Log message %s ==> %s", message, to_logstash(header, message)
-            )
+    async with Client(ip_and_port, our_net_id=our_net_id) as client:
+        async with client.get_circuit(their_net_id) as circuit:
+            device_info = await circuit.get_device_information()
+            circuit.log.info("Device info: %s", device_info)
+            project_name = await circuit.get_project_name()
+            circuit.log.info("Project name: %s", project_name)
+            app_name = await circuit.get_app_name()
+            circuit.log.info("Application name: %s", app_name)
+            task_names = await circuit.get_task_names()
+            circuit.log.info("Task names: %s", task_names)
+
+            # Give some time for initial notifications, and prune any stale
+            # ones from previous sessions:
+            await asyncio.sleep(1.0)
+            await circuit.prune_unknown_notifications()
+            async for header, _, sample in circuit.enable_log_system():
+                try:
+                    message = sample.as_log_message()
+                except Exception:
+                    circuit.log.exception("Got a bad log message sample? %s", sample)
+                    continue
+
+                circuit.log.info(
+                    "Log message %s ==> %s", message, to_logstash(header, message)
+                )
 
 
 if __name__ == "__main__":
