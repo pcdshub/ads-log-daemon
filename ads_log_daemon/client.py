@@ -48,33 +48,35 @@ async def test():
     ads_async.log.configure(level='DEBUG')
 
     async with AsyncioClient(
-        server_host=('localhost', 48898),
-        server_net_id='172.21.148.227.1.1',
-        client_net_id='172.21.148.164.1.1'
+        ('localhost', 48898),
+        our_net_id='172.21.148.164.1.1'
     ) as client:
-        device_info = await client.get_device_information()
-        client.log.info('Device info: %s', device_info)
-        project_name = await client.get_project_name()
-        client.log.info('Project name: %s', project_name)
-        app_name = await client.get_app_name()
-        client.log.info('Application name: %s', app_name)
-        task_names = await client.get_task_names()
-        client.log.info('Task names: %s', task_names)
+        circuit = client.get_circuit('172.21.148.227.1.1')
+        device_info = await circuit.get_device_information()
+        circuit.log.info('Device info: %s', device_info)
+        project_name = await circuit.get_project_name()
+        circuit.log.info('Project name: %s', project_name)
+        app_name = await circuit.get_app_name()
+        circuit.log.info('Application name: %s', app_name)
+        task_names = await circuit.get_task_names()
+        circuit.log.info('Task names: %s', task_names)
 
         # Give some time for initial notifications, and prune any stale
         # ones from previous sessions:
         await asyncio.sleep(1.0)
-        await client.prune_unknown_notifications()
-        async for header, _, sample in client.enable_log_system():
+        await circuit.prune_unknown_notifications()
+        async for header, _, sample in circuit.enable_log_system():
             try:
                 message = sample.as_log_message()
             except Exception:
-                client.log.exception('Got a bad log message sample? %s',
-                                     sample)
+                circuit.log.exception('Got a bad log message sample? %s',
+                                      sample)
                 continue
 
-            client.log.info("Log message %s ==> %s", message,
-                            to_logstash(header, message))
+            circuit.log.info(
+                "Log message %s ==> %s", message,
+                to_logstash(header, message)
+            )
 
 
 if __name__ == '__main__':
