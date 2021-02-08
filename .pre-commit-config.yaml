@@ -26,3 +26,10 @@ repos:
     rev: 5.7.0
     hooks:
     -   id: isort
+
+- repo: https://github.com/psf/black
+  rev: 20.8b1
+  hooks:
+    - id: black
+      language_version: python3
+      exclude: '^(versioneer.py|ads_log_daemon/_version.py)$'
