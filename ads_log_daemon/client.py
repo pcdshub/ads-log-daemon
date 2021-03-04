@@ -1,16 +1,16 @@
 import asyncio
 import json
+import logging
 import os
 import sys
-import logging
 from typing import Optional
 
 import ads_async
 from ads_async import constants, structs
-from ads_async.exceptions import RequestFailedError
 from ads_async.asyncio.client import Client
 from ads_async.bin.info import get_plc_info
 from ads_async.bin.route import add_route_to_plc
+from ads_async.exceptions import RequestFailedError
 
 LOG_DAEMON_HOST = os.environ.get("LOG_DAEMON_NET_ID", "172.21.32.90")
 LOG_DAEMON_NET_ID = os.environ.get("LOG_DAEMON_NET_ID", f"{LOG_DAEMON_HOST}.1.1")
@@ -57,6 +57,17 @@ def to_logstash(
     }
 
 
+async def get_or_fallback(coro, fallback, log: bool = False):
+    """Get the result of the coroutine or fall back to `fallback`."""
+    try:
+        return await coro
+    except RequestFailedError as ex:
+        logger.debug("Failed to get %s (%s)", coro, ex)
+        if log:
+            logger.warning("Failed to get %s (%s)", coro, ex)
+        return fallback
+
+
 async def client_loop(
     their_host: str,
     their_net_id: Optional[str] = None,
@@ -87,33 +98,23 @@ async def client_loop(
             their_host,
             source_net_id=our_net_id,
             source_name=LOG_DAEMON_HOST,
-            route_name=LOG_DAEMON_HOST, # LOG_DAEMON_ROUTE_NAME
+            route_name=LOG_DAEMON_HOST,  # LOG_DAEMON_ROUTE_NAME
         )
         logger.info("Added route to PLC %s", their_host)
 
-    async with Client((their_host, constants.ADS_TCP_SERVER_PORT), our_net_id=our_net_id) as client:
+    async with Client(
+        (their_host, constants.ADS_TCP_SERVER_PORT), our_net_id=our_net_id
+    ) as client:
         async with client.get_circuit(their_net_id) as circuit:
             device_info = await circuit.get_device_information()
-            try:
-                project_name = await circuit.get_project_name()
-            except RequestFailedError as ex:
-                # logger.warning("Failed to get project name from %s (%s)", their_host, ex)
-                project_name = ''
-
-            try:
-                app_name = await circuit.get_app_name()
-            except RequestFailedError as ex:
-                # logger.warning("Failed to get application name: %s (%s)", their_host, ex)
-                app_name = ''
-
-            try:
-                task_names = await circuit.get_task_names()
-            except RequestFailedError as ex:
-                # logger.warning("Failed to get task names: %s (%s)", their_host, ex)
-                task_names = []
+            project_name = get_or_fallback(circuit.get_project_name(), "")
+            app_name = get_or_fallback(circuit.get_app_name(), "")
+            task_names = get_or_fallback(circuit.get_task_names(), [])
 
             logger.info("Service PLC info: %s", plc_info)
-            logger.info("PLC Device info: %s (%s)", device_info.version, device_info.name)
+            logger.info(
+                "PLC Device info: %s (%s)", device_info.version, device_info.name
+            )
             # Project name such as "Project1"
             logger.info("Project name: %r", project_name)
             # Application name such as "Port_851"
@@ -125,12 +126,11 @@ async def client_loop(
                 "net_id": plc_info["source_net_id"],
                 "address": their_host,
                 "name": plc_info["plc_name"],
-                "version": '{}.{}.{}'.format(*device_info.version.as_tuple),
+                "version": "{}.{}.{}".format(*device_info.version.as_tuple),
                 "device_info_name": device_info.name,
                 "project_name": project_name,
                 "task_names": task_names,
                 # Can also get like `stLibVersion_Tc3_Module` or for LCLS general, etc.
-
             }
             logger.info("PLC identifier: %s", plc_identifier)
 
@@ -152,6 +152,6 @@ async def client_loop(
 
 if __name__ == "__main__":
     logging.basicConfig(format=ads_async.log.PLAIN_LOG_FORMAT, level="INFO")
-    handler = ads_async.log.configure(level="DEBUG")
+    handler = ads_async.log.configure(level="INFO")
     plc_host = sys.argv[1]
     value = asyncio.run(client_loop(plc_host), debug=True)
