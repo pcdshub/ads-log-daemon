@@ -254,8 +254,16 @@ async def client_loop(
                 )
 
 
+async def main(client_addresses):
+    if len(client_addresses) == 0:
+        logger.error("No client addresses given; exiting")
+        return
+
+    tasks = [asyncio.create_task(client_loop(addr)) for addr in client_addresses]
+    await asyncio.gather(*tasks)
+
+
 if __name__ == "__main__":
     logging.basicConfig(format=ads_async.log.PLAIN_LOG_FORMAT, level="INFO")
     handler = ads_async.log.configure(level="INFO")
-    plc_host = sys.argv[1]
-    value = asyncio.run(client_loop(plc_host), debug=True)
+    value = asyncio.run(main(sys.argv[1:]), debug=True)
