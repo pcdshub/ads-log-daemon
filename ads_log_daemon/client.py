@@ -138,6 +138,7 @@ async def client_loop(
             # ones from previous sessions:
             await asyncio.sleep(1.0)
             await circuit.prune_unknown_notifications()
+            logger.info("Enabling the log system and waiting for messages...")
             async for header, _, sample in circuit.enable_log_system():
                 try:
                     message = sample.as_log_message()
