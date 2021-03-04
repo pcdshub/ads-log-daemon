@@ -107,9 +107,9 @@ async def client_loop(
     ) as client:
         async with client.get_circuit(their_net_id) as circuit:
             device_info = await circuit.get_device_information()
-            project_name = get_or_fallback(circuit.get_project_name(), "")
-            app_name = get_or_fallback(circuit.get_app_name(), "")
-            task_names = get_or_fallback(circuit.get_task_names(), [])
+            project_name = await get_or_fallback(circuit.get_project_name(), "")
+            app_name = await get_or_fallback(circuit.get_app_name(), "")
+            task_names = await get_or_fallback(circuit.get_task_names(), [])
 
             logger.info("Service PLC info: %s", plc_info)
             logger.info(
