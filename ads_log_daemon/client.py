@@ -1,8 +1,10 @@
 import asyncio
+import datetime
 import json
 import logging
 import os
 import sys
+import time
 from typing import Optional
 
 import ads_async
@@ -12,30 +14,96 @@ from ads_async.bin.info import get_plc_info
 from ads_async.bin.route import add_route_to_plc
 from ads_async.exceptions import RequestFailedError
 
+# Host and AMS Net ID of the daemon:
 LOG_DAEMON_HOST = os.environ.get("LOG_DAEMON_NET_ID", "172.21.32.90")
 LOG_DAEMON_NET_ID = os.environ.get("LOG_DAEMON_NET_ID", f"{LOG_DAEMON_HOST}.1.1")
+
+# Route name to add to PLC:
 LOG_DAEMON_ROUTE_NAME = os.environ.get("LOG_DAEMON_ROUTE_NAME", "ads-log-daemon")
+# Encoding of messages from the PLC:
+LOG_DAEMON_SOURCE_ENCODING = os.environ.get("LOG_DAEMON_SOURCE_ENCODING", "latin-1")
+
+# Logstash target host and port:
+LOG_DAEMON_TARGET_HOST = os.environ.get("LOG_DAEMON_TARGET_HOST", "ctl-logdev01")
+LOG_DAEMON_TARGET_PORT = int(os.environ.get("LOG_DAEMON_TARGET_PORT", 54322))
+# Encoding for the generated logstash JSON messages:
+LOG_DAEMON_ENCODING = os.environ.get("LOG_DAEMON_ENCODING", "utf-8")
+
+# Are we within, e.g., a minute of what this machine's time shows?  Check for clock skew/
+# missing NTP settings/etc
+LOG_DAEMON_TIMESTAMP_THRESHOLD = int(
+    os.environ.get("LOG_DAEMON_TIMESTAMP_THRESHOLD", 60)
+)
+
+
+MSG_CLOCK_SETTINGS_BAD = (
+    "{plc_name} clock settings incorrect. Off by approximately {dt} seconds. "
+    "Log daemon will use its system timestamp."
+)
+
 logger = logging.getLogger(__name__)
 
 
-def to_logstash(
+class _UdpProtocol:
+    def __init__(self):
+        self.transport = None
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, addr):
+        ...
+
+    def error_received(self, ex):
+        logger.error("UDP error %s", ex)
+
+    def connection_lost(self, ex):
+        logger.error("UDP error / closed? %s", ex)
+
+
+async def udp_transport_loop(queue, host, port):
+    loop = asyncio.get_running_loop()
+    transport, protocol = await loop.create_datagram_endpoint(
+        _UdpProtocol,
+        remote_addr=(host, port),
+    )
+    while True:
+        try:
+            item = await queue.get()
+            json_item = json.dumps(item).encode(LOG_DAEMON_ENCODING)
+            transport.sendto(json_item)
+        except Exception as ex:
+            logger.warning("Failed to send message: %s", ex)
+            logger.debug("Failed to send message: %s", ex, exc_info=True)
+            await asyncio.sleep(0.01)
+
+
+def to_custom_json(
     header: structs.AoEHeader, message: structs.AdsNotificationLogMessage
 ) -> dict:
-    custom_json = {
-        "port_name": message.sender_name.decode("ascii"),
+    return {
+        "port_name": message.sender_name.decode(LOG_DAEMON_SOURCE_ENCODING),
         "ams_port": message.ams_port,
         "source": repr(header.source),
         "identifier": message.unknown,
     }
 
+
+def to_logstash(
+    header: structs.AoEHeader,
+    message: structs.AdsNotificationLogMessage,
+    *,
+    custom_message: Optional[str] = None,
+    use_system_time: bool = False,
+) -> dict:
     # From:
-    # AdsNotificationLogMessage(timestamp=datetime.datetime,
-    #                           unknown=84, ams_port=500,
-    #                           sender_name=b'TCNC',
-    #                           message_length=114, message=b'\'Axis
-    #                           1\' (Axis-ID: 1): The axis needs the
-    #                           "Feed Forward Permission" for forward
-    #                           positioning (error-code: 0x4358) !')
+    # AdsNotificationLogMessage(
+    #   timestamp=datetime.datetime,
+    #   unknown=84, ams_port=500,
+    #   sender_name=b'TCNC',
+    #   message_length=114, message=b'\'Axis 1\' (Axis-ID: 1): The axis needs the
+    #   "Feed Forward Permission" for forward positioning (error-code: 0x4358) !'
+    #  )
     # To:
     # (f'{"schema":"twincat-event-0","ts":{twincat_now},"plc":"LogTest",'
     #   '"severity":4,"id":0,'
@@ -44,17 +112,26 @@ def to_logstash(
     #   '"source":"pcds_logstash.testing.fbLogger/Debug",'
     #   '"event_type":3,"json":"{}"}'
     #   ),
+    custom_json = to_custom_json(header, message)
+    msg = custom_message or message.message.decode(LOG_DAEMON_SOURCE_ENCODING).rstrip(
+        "\x00"
+    )
     return {
         "schema": "twincat-event-0",
-        "ts": message.timestamp.timestamp(),
+        "ts": time.time() if use_system_time else message.timestamp.timestamp(),
         "severity": 0,  # hmm
         "id": 0,  # hmm
         "event_class": "C0FFEEC0-FFEE-COFF-EECO-FFEEC0FFEEC0",
-        "msg": message.message.decode("latin-1"),
+        "msg": msg,
         "source": "logging.aggregator/PythonLogDaemon",
-        "event_type": 0,  # hmm
+        "event_type": 3,  # 3=message_sent
         "json": json.dumps(custom_json),
     }
+
+
+def timestamp_delta_seconds(timestamp: datetime.datetime) -> float:
+    """What's the time difference, in seconds, of our clock vs the timestamp in the message?"""
+    return (datetime.datetime.now() - timestamp).total_seconds()
 
 
 async def get_or_fallback(coro, fallback, log: bool = False):
@@ -102,6 +179,11 @@ async def client_loop(
         )
         logger.info("Added route to PLC %s", their_host)
 
+    udp_queue = asyncio.Queue()
+    asyncio.create_task(
+        udp_transport_loop(udp_queue, LOG_DAEMON_TARGET_HOST, LOG_DAEMON_TARGET_PORT)
+    )
+
     async with Client(
         (their_host, constants.ADS_TCP_SERVER_PORT), our_net_id=our_net_id
     ) as client:
@@ -125,7 +207,7 @@ async def client_loop(
             plc_identifier = {
                 "net_id": plc_info["source_net_id"],
                 "address": their_host,
-                "name": plc_info["plc_name"],
+                "plc_name": plc_info["plc_name"],
                 "version": "{}.{}.{}".format(*device_info.version.as_tuple),
                 "device_info_name": device_info.name,
                 "project_name": project_name,
@@ -139,6 +221,7 @@ async def client_loop(
             await asyncio.sleep(1.0)
             await circuit.prune_unknown_notifications()
             logger.info("Enabling the log system and waiting for messages...")
+            clock_incorrect = None
             async for header, _, sample in circuit.enable_log_system():
                 try:
                     message = sample.as_log_message()
@@ -148,6 +231,26 @@ async def client_loop(
 
                 logger.info(
                     "Log message %s ==> %s", message, to_logstash(header, message)
+                )
+
+                if clock_incorrect is None:
+                    dt = timestamp_delta_seconds(message.timestamp)
+                    clock_incorrect = abs(dt) > LOG_DAEMON_TIMESTAMP_THRESHOLD
+                    if clock_incorrect:
+                        custom_msg = MSG_CLOCK_SETTINGS_BAD.format(
+                            header=header, message=message, dt=int(dt), **plc_identifier
+                        )
+                        await udp_queue.put(
+                            to_logstash(
+                                header,
+                                message,
+                                use_system_time=True,
+                                custom_message=custom_msg,
+                            )
+                        )
+
+                await udp_queue.put(
+                    to_logstash(header, message, use_system_time=clock_incorrect)
                 )
 
 
