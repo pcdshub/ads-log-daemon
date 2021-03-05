@@ -90,6 +90,7 @@ def to_custom_json(
 
 
 def to_logstash(
+    plc_identifier: dict,
     header: structs.AoEHeader,
     message: structs.AdsNotificationLogMessage,
     *,
@@ -123,6 +124,7 @@ def to_logstash(
         "id": 0,  # hmm
         "event_class": "C0FFEEC0-FFEE-COFF-EECO-FFEEC0FFEEC0",
         "msg": msg,
+        "plc": plc_identifier["plc_name"],
         "source": "logging.aggregator/PythonLogDaemon",
         "event_type": 3,  # 3=message_sent
         "json": json.dumps(custom_json),
@@ -227,10 +229,13 @@ async def client_loop(
                     message = sample.as_log_message()
                 except Exception:
                     logger.exception("Got a bad log message sample? %s", sample)
+                    print(bytes(sample.data))
                     continue
 
                 logger.info(
-                    "Log message %s ==> %s", message, to_logstash(header, message)
+                    "Log message %s ==> %s",
+                    message,
+                    to_logstash(plc_identifier, header, message),
                 )
 
                 if clock_incorrect is None:
@@ -242,6 +247,7 @@ async def client_loop(
                         )
                         await udp_queue.put(
                             to_logstash(
+                                plc_identifier,
                                 header,
                                 message,
                                 use_system_time=True,
@@ -250,7 +256,9 @@ async def client_loop(
                         )
 
                 await udp_queue.put(
-                    to_logstash(header, message, use_system_time=clock_incorrect)
+                    to_logstash(
+                        plc_identifier, header, message, use_system_time=clock_incorrect
+                    )
                 )
 
 
@@ -261,6 +269,15 @@ async def main(client_addresses):
 
     tasks = [asyncio.create_task(client_loop(addr)) for addr in client_addresses]
     await asyncio.gather(*tasks)
+
+
+# sample = structs.AdsNotificationSample(
+#     notification_handle=37,
+#     sample_size=255,
+#     data=b"@mk\xfdT\x11\xd7\x01T\x00\x00\x00\xf4\x01\x00\x00TCNC\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xe0\x00\x00\x00'Axis 1' (Axis-ID: 1, Grp-ID: 1): The axis or a coupled slave axis has lost its controller enable signal while executing a command => error 0x4260 (StateDWord: 0x2101301, CoupleState: 0, ActPos: 38.290918, ActVelo: 0.83"  # noqa
+# )
+#
+# print(sample.as_log_message())
 
 
 if __name__ == "__main__":
