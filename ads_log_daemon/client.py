@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 import ads_async
+import ldap
 from ads_async import constants, structs
 from ads_async.asyncio.client import Client
 from ads_async.bin.info import get_plc_info
@@ -29,6 +30,17 @@ LOG_DAEMON_TARGET_PORT = int(os.environ.get("LOG_DAEMON_TARGET_PORT", 54322))
 # Encoding for the generated logstash JSON messages:
 LOG_DAEMON_ENCODING = os.environ.get("LOG_DAEMON_ENCODING", "utf-8")
 
+LOG_DAEMON_HOST_PREFIXES = os.environ.get(
+    "LOG_DAEMON_HOST_PREFIXES", "plc-*,bhc-*"
+).split(",")
+LOG_DAEMON_LDAP_SERVER = os.environ.get(
+    "LOG_DAEMON_LDAP_SERVER", "ldap://psldap1.pcdsn"
+)
+LOG_DAEMON_LDAP_SEARCH_BASE = os.environ.get(
+    "LOG_DAEMON_LDAP_BASE", "ou=Subnets,dc=reg,o=slac"
+)
+
+
 # Are we within, e.g., a minute of what this machine's time shows?  Check for clock skew/
 # missing NTP settings/etc
 LOG_DAEMON_TIMESTAMP_THRESHOLD = int(
@@ -42,6 +54,97 @@ MSG_CLOCK_SETTINGS_BAD = (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class LDAPHelper:
+    """
+    LDAP helper class to find PLCs.
+
+    Parameters
+    ----------
+    server : str, optional
+        LDAP server, defaults to LOG_DAEMON_LDAP_SERVER.
+
+    base : str, optional
+        LDAP base to search, defaults to LOG_DAEMON_LDAP_SEARCH_BASE.
+
+    host_prefixes : list, optional
+        List of host prefixes, including glob syntax.
+        Defaults to comma-delimited LOG_DAEMON_HOST_PREFIXES.
+
+    Attributes
+    ----------
+    hosts : dict
+        Common host name to dictionary of information, with keys
+        ``{"location", "desc", "mac", "host_name", "ip_address"}``
+    """
+
+    def __init__(
+        self,
+        server=LOG_DAEMON_LDAP_SERVER,
+        base=LOG_DAEMON_LDAP_SEARCH_BASE,
+        host_prefixes=LOG_DAEMON_HOST_PREFIXES,
+    ):
+        self.client = ldap.initialize(server)
+        self.hosts = {}
+        self.base = base
+        self.host_prefixes = host_prefixes
+        self._last_hosts = set()
+
+    def update_hosts(self):
+        """
+        Update hosts dictionary with the LDAP client.
+
+        After an update, refer to the ``.hosts`` dictionary.
+
+        Returns
+        -------
+        removed : set
+            Removed host names.
+
+        added : set
+            Added host names.
+        """
+        host_filter = "".join(
+            f"(cn={host_prefix})" for host_prefix in self.host_prefixes
+        )
+        search_filter = f"(|{host_filter})"
+
+        def get_value(entry, key):
+            value, *_ = entry.get(key, [b""])
+            if isinstance(value, bytes):
+                return value.decode("ascii")
+            return value
+
+        found_hosts = set()
+        added_hosts = set()
+        for dn, entry in self.client.search_s(
+            self.base, ldap.SCOPE_SUBTREE, search_filter
+        ):
+            ip_address = get_value(entry, "ipHostNumber")
+            common_name = get_value(entry, "cn")
+
+            is_new = (
+                common_name not in self.hosts
+                or ip_address != self.hosts[common_name]["ip_address"]
+            )
+            if is_new:
+                added_hosts.add(common_name)
+            self.hosts[common_name] = dict(
+                location=get_value(entry, "location"),
+                desc=get_value(entry, "description"),
+                mac=get_value(entry, "macAddress"),
+                host_name=common_name,
+                ip_address=ip_address,
+            )
+            found_hosts.add(common_name)
+
+        removed_hosts = self._last_hosts - found_hosts
+        for host in removed_hosts:
+            self.hosts.pop(host, None)
+
+        self._last_hosts = added_hosts
+        return removed_hosts, added_hosts
 
 
 class _UdpProtocol:
