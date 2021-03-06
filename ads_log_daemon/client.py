@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import enum
 import json
 import logging
 import os
@@ -59,6 +60,37 @@ MSG_CLOCK_SETTINGS_BAD = (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class MessageType(enum.IntFlag):
+    """This may be related to the identifier - not sure yet."""
+
+    hint = 0x01
+    warn = 0x02
+    error = 0x04
+    log = 0x10
+    msgbox = 0x20
+    resource = 0x40
+    string = 0x80
+
+
+def guess_subsystem(host: str) -> str:
+    """Guess the subsystem based on the host name."""
+    host = host.replace("_", "-").lower()
+    if "-vac" in host:
+        return "Vacuum"
+    if "-optics" in host:
+        return "Optics"
+    if "-motion" in host:
+        return "Motion"
+    if "-vonhamos" in host:
+        return "Motion"
+    if "-sds" in host:
+        return "SDS"
+    try:
+        return host.split("-")[1].upper()
+    except Exception:
+        return "PythonLogDaemon"
 
 
 class LDAPHelper:
@@ -227,6 +259,7 @@ def to_logstash(
     msg = custom_message or message.message.decode(LOG_DAEMON_SOURCE_ENCODING).rstrip(
         "\x00"
     )
+    subsystem = guess_subsystem(plc_identifier["host_name"])
     return {
         "schema": "twincat-event-0",
         "ts": time.time() if use_system_time else message.timestamp.timestamp(),
@@ -235,7 +268,7 @@ def to_logstash(
         "event_class": "C0FFEEC0-FFEE-COFF-EECO-FFEEC0FFEEC0",
         "msg": msg,
         "plc": plc_identifier["plc_name"],
-        "source": "logging.aggregator/PythonLogDaemon",
+        "source": f"logging.aggregator/{subsystem}",
         "event_type": 3,  # 3=message_sent
         "json": json.dumps(custom_json),
     }
@@ -446,7 +479,7 @@ async def main_ldap():
     while True:
         logger.info("Looking for new hosts with LDAP...")
         removed_hosts, added_hosts = ld.update_hosts()
-        for host in added_hosts.union(removed_hosts):
+        for host in removed_hosts:
             task = tasks.pop(host, None)
             if task is not None:
                 tasks.cancel()
@@ -479,7 +512,7 @@ async def main_ldap():
 if __name__ == "__main__":
     logging.basicConfig(format=ads_async.log.PLAIN_LOG_FORMAT, level="INFO")
     handler = ads_async.log.configure(level="INFO")
-
+    logging.getLogger("ads_async.bin.utils").setLevel(logging.WARNING)
     # TODO argparse
     if "--ldap" in sys.argv:
         value = asyncio.run(main_ldap(), debug=True)
