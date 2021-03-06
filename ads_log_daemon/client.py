@@ -73,6 +73,17 @@ class MessageType(enum.IntFlag):
     resource = 0x40
     string = 0x80
 
+    def to_severity(self) -> int:
+        """Guess at target severity."""
+        # Critical is 4...
+        if MessageType.error in self:
+            return 3
+        if MessageType.warn in self:
+            return 2
+        if MessageType.hint in self:
+            return 1
+        return 0
+
 
 def guess_subsystem(host: str) -> str:
     """Guess the subsystem based on the host name."""
@@ -263,7 +274,7 @@ def to_logstash(
     return {
         "schema": "twincat-event-0",
         "ts": time.time() if use_system_time else message.timestamp.timestamp(),
-        "severity": 0,  # hmm
+        "severity": MessageType(int(message.unknown)).to_severity(),
         "id": 0,  # hmm
         "event_class": "C0FFEEC0-FFEE-COFF-EECO-FFEEC0FFEEC0",
         "msg": msg,
@@ -316,15 +327,16 @@ async def client_loop(
     if add_log_filter:
         # Filter the circuit-level messages:
         handler.addFilter(ads_async.log.AddressFilter(our_net_id, their_net_id))
+    plc_host_name = metadata.get("host_name", None)
 
     while True:
         try:
             plc_info = await get_plc_info(their_host)
         except TimeoutError:
             logger.warning(
-                "%s may not be a PLC, or is not responding. Will try again in a bit. (%s)",
+                "%s (%s) may not be a PLC, or is not responding. Waiting before retrying.",
+                plc_host_name,
                 their_host,
-                metadata.get("desc", None),
             )
             await asyncio.sleep(LOG_DAEMON_INFO_PERIOD)
         else:
@@ -333,7 +345,8 @@ async def client_loop(
     logger.debug("Host: %s Got PLC info: %s", their_host, plc_info)
     if plc_info["source_net_id"] != their_net_id:
         logger.warning(
-            "PLC reports Net ID: %s Configured Net ID: %s; using PLC-reported Net ID.",
+            "%s PLC reports Net ID: %s Configured Net ID: %s; using PLC-reported Net ID.",
+            plc_host_name,
             plc_info["source_net_id"],
             their_net_id,
         )
@@ -347,12 +360,57 @@ async def client_loop(
             source_name=LOG_DAEMON_HOST,
             route_name=LOG_DAEMON_HOST,  # LOG_DAEMON_ROUTE_NAME
         )
-        logger.info("Added route to PLC %s", their_host)
+        logger.info("Added route to PLC %s", plc_host_name)
 
     udp_queue = asyncio.Queue()
     asyncio.create_task(
         udp_transport_loop(udp_queue, LOG_DAEMON_TARGET_HOST, LOG_DAEMON_TARGET_PORT)
     )
+
+    plc_identifier = {
+        "net_id": plc_info["source_net_id"],
+        "address": their_host,
+        "host_name": plc_host_name,
+    }
+    clock_incorrect = None
+    # This should all probably be moved out into a class or refactored, yuck
+
+    async def handle_message(header, message):
+        nonlocal clock_incorrect
+        logger.info(
+            "%s Log message %s ==> %s",
+            plc_host_name,
+            message,
+            to_logstash(plc_identifier, header, message, add_json=metadata),
+        )
+
+        if clock_incorrect is None:
+            dt = timestamp_delta_seconds(message.timestamp)
+            clock_incorrect = abs(dt) > LOG_DAEMON_TIMESTAMP_THRESHOLD
+            if clock_incorrect:
+                custom_msg = MSG_CLOCK_SETTINGS_BAD.format(
+                    header=header, message=message, dt=int(dt), **plc_identifier
+                )
+                await udp_queue.put(
+                    to_logstash(
+                        plc_identifier,
+                        header,
+                        message,
+                        use_system_time=True,
+                        custom_message=custom_msg,
+                        add_json=metadata,
+                    )
+                )
+
+        await udp_queue.put(
+            to_logstash(
+                plc_identifier,
+                header,
+                message,
+                use_system_time=clock_incorrect,
+                add_json=metadata,
+            )
+        )
 
     async def circuit_main(circuit):
         device_info = await circuit.get_device_information()
@@ -360,74 +418,49 @@ async def client_loop(
         app_name = await get_or_fallback(circuit.get_app_name(), "")
         task_names = await get_or_fallback(circuit.get_task_names(), [])
 
-        logger.info("Service PLC info: %s", plc_info)
-        logger.info("PLC Device info: %s (%s)", device_info.version, device_info.name)
+        logger.info("%s Service PLC info: %s", plc_host_name, plc_info)
+        logger.info(
+            "%s PLC Device info: %s (%s)",
+            plc_host_name,
+            device_info.version,
+            device_info.name,
+        )
         # Project name such as "Project1"
-        logger.info("Project name: %r", project_name)
+        logger.info("%s Project name: %r", plc_host_name, project_name)
         # Application name such as "Port_851"
-        logger.info("Application name: %r", app_name)
+        logger.info("%s Application name: %r", plc_host_name, app_name)
         # Task names such as ["MAIN_PlcTask", ...]
-        logger.info("Task names: %s", task_names)
+        logger.info("%s Task names: %s", plc_host_name, task_names)
 
-        plc_identifier = {
-            "net_id": plc_info["source_net_id"],
-            "address": their_host,
-            "plc_name": plc_info["plc_name"],
-            "version": "{}.{}.{}".format(*device_info.version.as_tuple),
-            "device_info_name": device_info.name,
-            "project_name": project_name,
-            "task_names": task_names,
-            # Can also get like `stLibVersion_Tc3_Module` or for LCLS general, etc.
-        }
+        plc_identifier.update(
+            {
+                "plc_name": plc_info["plc_name"],
+                "version": "{}.{}.{}".format(*device_info.version.as_tuple),
+                "device_info_name": device_info.name,
+                "project_name": project_name,
+                "task_names": task_names,
+                # Can also get like `stLibVersion_Tc3_Module` or for LCLS general, etc.
+            }
+        )
         logger.info("PLC identifier: %s", plc_identifier)
 
         # Give some time for initial notifications, and prune any stale
         # ones from previous sessions:
         await asyncio.sleep(1.0)
         await circuit.prune_unknown_notifications()
-        logger.info("Enabling the log system and waiting for messages...")
-        clock_incorrect = None
+        logger.info(
+            "%s: Enabling the log system and waiting for messages...", plc_host_name
+        )
         async for header, _, sample in circuit.enable_log_system():
             try:
                 message = sample.as_log_message()
+                await handle_message(header, message)
             except Exception:
-                logger.exception("Got a bad log message sample? %s", sample)
-                print(bytes(sample.data))
-                continue
-
-            logger.info(
-                "Log message %s ==> %s",
-                message,
-                to_logstash(plc_identifier, header, message, add_json=metadata),
-            )
-
-            if clock_incorrect is None:
-                dt = timestamp_delta_seconds(message.timestamp)
-                clock_incorrect = abs(dt) > LOG_DAEMON_TIMESTAMP_THRESHOLD
-                if clock_incorrect:
-                    custom_msg = MSG_CLOCK_SETTINGS_BAD.format(
-                        header=header, message=message, dt=int(dt), **plc_identifier
-                    )
-                    await udp_queue.put(
-                        to_logstash(
-                            plc_identifier,
-                            header,
-                            message,
-                            use_system_time=True,
-                            custom_message=custom_msg,
-                            add_json=metadata,
-                        )
-                    )
-
-            await udp_queue.put(
-                to_logstash(
-                    plc_identifier,
-                    header,
-                    message,
-                    use_system_time=clock_incorrect,
-                    add_json=metadata,
+                logger.exception(
+                    "%s Bad log message sample or failed to send: %s",
+                    plc_host_name,
+                    sample,
                 )
-            )
 
     async with Client(
         (their_host, constants.ADS_TCP_SERVER_PORT), our_net_id=our_net_id
@@ -436,9 +469,7 @@ async def client_loop(
             try:
                 await circuit_main(circuit)
             except asyncio.CancelledError:
-                # Clean up with the
                 logger.debug("%s task cancelled", their_host)
-                return
 
 
 async def main_manual(client_addresses):
