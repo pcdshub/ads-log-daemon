@@ -248,6 +248,7 @@ def to_logstash(
     custom_message: Optional[str] = None,
     add_json: Optional[dict] = None,
     use_system_time: bool = False,
+    severity: Optional[int] = None,
 ) -> dict:
     # From:
     # AdsNotificationLogMessage(
@@ -271,10 +272,13 @@ def to_logstash(
         "\x00"
     )
     subsystem = guess_subsystem(plc_identifier["host_name"])
+    if severity is None:
+        severity = MessageType(int(message.unknown)).to_severity()
+
     return {
         "schema": "twincat-event-0",
         "ts": time.time() if use_system_time else message.timestamp.timestamp(),
-        "severity": MessageType(int(message.unknown)).to_severity(),
+        "severity": severity,
         "id": 0,  # hmm
         "event_class": "C0FFEEC0-FFEE-COFF-EECO-FFEEC0FFEEC0",
         "msg": msg,
@@ -399,6 +403,7 @@ async def client_loop(
                         use_system_time=True,
                         custom_message=custom_msg,
                         add_json=metadata,
+                        severity=3,
                     )
                 )
 
