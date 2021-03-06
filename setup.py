@@ -1,8 +1,9 @@
 import sys
 from os import path
 
-import versioneer
 from setuptools import find_packages, setup
+
+import versioneer
 
 min_version = (3, 6)
 
@@ -47,7 +48,10 @@ setup(
     license='BSD',
     author='SLAC National Accelerator Laboratory',
     packages=find_packages(exclude=['docs', 'tests']),
-    description=' Daemon for translating TwinCAT ADS Logger messages to JSON for interpretation by [pcds-]logstash.',
+    description=(
+        'Daemon for translating TwinCAT ADS Logger messages to JSON for '
+        'interpretation by logstash.'
+    ),
     long_description=readme,
     url='https://github.com/pcdshub/ads-log-daemon',  # noqa
     entry_points={
