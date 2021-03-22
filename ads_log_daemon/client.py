@@ -512,10 +512,10 @@ async def main_ldap():
         )
 
     def prune_tasks():
-        for name, task in list(tasks.items()):
+        for host, task in list(tasks.items()):
             if task.done():
                 logger.info("Removing dead task for %s", describe_host(host))
-                tasks.pop(name)
+                tasks.pop(host)
 
     while True:
         logger.info("Looking for new hosts with LDAP...")
