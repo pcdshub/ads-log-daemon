@@ -333,15 +333,20 @@ async def client_loop(
         handler.addFilter(ads_async.log.AddressFilter(our_net_id, their_net_id))
     plc_host_name = metadata.get("host_name", None)
 
+    warn_count = 0
     while True:
         try:
             plc_info = await get_plc_info(their_host)
         except TimeoutError:
-            logger.warning(
-                "%s (%s) may not be a PLC, or is not responding. Waiting before retrying.",
-                plc_host_name,
-                their_host,
-            )
+            if (warn_count % 60) == 0:
+                # First time and every hour, maybe.
+                logger.warning(
+                    "%s (%s) may not be a PLC, or is not responding. "
+                    "Waiting before retrying.",
+                    plc_host_name,
+                    their_host,
+                )
+            warn_count += 1
             await asyncio.sleep(LOG_DAEMON_INFO_PERIOD)
         else:
             break
@@ -507,10 +512,10 @@ async def main_ldap():
         )
 
     def prune_tasks():
-        for name, task in list(tasks.items()):
+        for host, task in list(tasks.items()):
             if task.done():
                 logger.info("Removing dead task for %s", describe_host(host))
-                tasks.pop(name)
+                tasks.pop(host)
 
     while True:
         logger.info("Looking for new hosts with LDAP...")
