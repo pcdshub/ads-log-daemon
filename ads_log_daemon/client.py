@@ -4,6 +4,7 @@ import enum
 import json
 import logging
 import os
+import socket
 import sys
 import time
 from typing import Optional
@@ -17,8 +18,11 @@ from ads_async.bin.route import add_route_to_plc
 from ads_async.exceptions import RequestFailedError
 
 # Host and AMS Net ID of the daemon:
-LOG_DAEMON_HOST = os.environ.get("LOG_DAEMON_NET_ID", "172.21.32.90")
+LOG_DAEMON_HOST = os.environ.get("LOG_DAEMON_HOST", "172.21.32.90")
 LOG_DAEMON_NET_ID = os.environ.get("LOG_DAEMON_NET_ID", f"{LOG_DAEMON_HOST}.1.1")
+
+# The host name to report for daemon status messages:
+LOG_DAEMON_HOST_NAME = os.environ.get("LOG_DAEMON_HOST_NAME", socket.gethostname())
 
 # Route name to add to PLC:
 LOG_DAEMON_ROUTE_NAME = os.environ.get("LOG_DAEMON_ROUTE_NAME", "ads-log-daemon")
@@ -224,7 +228,7 @@ async def udp_transport_loop(queue, host, port):
             json_item = json.dumps(item).encode(LOG_DAEMON_ENCODING)
             transport.sendto(json_item)
         except Exception as ex:
-            logger.warning("Failed to send message: %s", ex)
+            logger.error("Failed to send message: %s", ex)
             logger.debug("Failed to send message: %s", ex, exc_info=True)
             await asyncio.sleep(0.01)
 
@@ -286,6 +290,26 @@ def to_logstash(
         "source": f"logging.aggregator/{subsystem}",
         "event_type": 3,  # 3=message_sent
         "json": json.dumps(custom_json),
+    }
+
+
+def create_status_message(
+    message: str,
+    *,
+    custom_json: Optional[dict] = None,
+    severity: Optional[int] = None,
+) -> dict:
+    return {
+        "schema": "twincat-event-0",
+        "ts": time.time(),
+        "severity": severity if severity is not None else 0,
+        "id": 0,  # hmm
+        "event_class": "C0FFEEC0-FFEE-COFF-EECO-FFEEC0FFEEC1",
+        "msg": message,
+        "plc": LOG_DAEMON_HOST_NAME,
+        "source": "logging.aggregator/LogDaemon",
+        "event_type": 3,  # 3=message_sent
+        "json": json.dumps(custom_json or {}),
     }
 
 
@@ -454,6 +478,13 @@ async def client_loop(
         )
         logger.info("PLC identifier: %s", plc_identifier)
 
+        await udp_queue.put(
+            create_status_message(
+                message=f'Logging daemon connected to and monitoring {plc_info["plc_name"]!r}',
+                custom_json=plc_identifier,
+            )
+        )
+
         # Give some time for initial notifications, and prune any stale
         # ones from previous sessions:
         await asyncio.sleep(1.0)
@@ -461,6 +492,7 @@ async def client_loop(
         logger.info(
             "%s: Enabling the log system and waiting for messages...", plc_host_name
         )
+
         async for header, _, sample in circuit.enable_log_system():
             try:
                 message = sample.as_log_message()
