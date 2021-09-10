@@ -341,6 +341,7 @@ async def get_plc_info(*args, **kwargs):
 
 
 async def client_loop(
+    handler: logging.Handler,
     their_host: str,
     their_net_id: Optional[str] = None,
     our_net_id: Optional[str] = None,
@@ -514,7 +515,7 @@ async def client_loop(
                 logger.debug("%s task cancelled", their_host)
 
 
-async def main_manual(client_addresses):
+async def main_manual(handler: logging.Handler, client_addresses):
     """Run the daemon with manually-specified list of client addresses."""
     if len(client_addresses) == 0:
         logger.error("No client addresses given; exiting")
@@ -523,11 +524,13 @@ async def main_manual(client_addresses):
         logger.error("I need to add argparser")
         return
 
-    tasks = [asyncio.create_task(client_loop(addr)) for addr in client_addresses]
+    tasks = [
+        asyncio.create_task(client_loop(handler, addr)) for addr in client_addresses
+    ]
     await asyncio.gather(*tasks)
 
 
-async def main_ldap():
+async def main_ldap(handler: logging.Handler):
     """Run the daemon using the configured LDAP settings to search for PLCs."""
     ld = LDAPHelper()
     tasks = {}
@@ -562,7 +565,7 @@ async def main_ldap():
         for host in missing_tasks:
             info = ld.hosts[host]
             logger.info("New host: %s", describe_host(host))
-            coro = client_loop(info["ip_address"], metadata=info)
+            coro = client_loop(handler, info["ip_address"], metadata=info)
             tasks[host] = asyncio.create_task(coro, name=f"log_{host}")
 
         try:
@@ -582,12 +585,15 @@ async def main_ldap():
         await asyncio.sleep(1.0)
 
 
-if __name__ == "__main__":
+def main():
     logging.basicConfig(format=ads_async.log.PLAIN_LOG_FORMAT, level="INFO")
     handler = ads_async.log.configure(level="INFO")
     logging.getLogger("ads_async.bin.utils").setLevel(logging.WARNING)
     # TODO argparse
     if "--ldap" in sys.argv:
-        value = asyncio.run(main_ldap(), debug=True)
-    else:
-        value = asyncio.run(main_manual(sys.argv[1:]), debug=True)
+        return asyncio.run(main_ldap(handler), debug=True)
+    return asyncio.run(main_manual(handler, sys.argv[1:]), debug=True)
+
+
+if __name__ == "__main__":
+    value = main()  # noqa
