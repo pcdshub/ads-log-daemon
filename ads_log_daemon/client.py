@@ -596,11 +596,21 @@ async def main_ldap(handler: logging.Handler):
 
     while True:
         logger.info("Looking for new hosts with LDAP...")
-        removed_hosts, added_hosts = ld.update_hosts()
+        try:
+            removed_hosts, _ = ld.update_hosts()
+        except Exception:
+            logger.exception(
+                "Failed to update LDAP hosts. Waiting for twice the "
+                "normal search period (= %s seconds).",
+                LOG_DAEMON_SEARCH_PERIOD * 2,
+            )
+            await asyncio.sleep(LOG_DAEMON_SEARCH_PERIOD * 2)
+            continue
+
         for host in removed_hosts:
             task = tasks.pop(host, None)
             if task is not None:
-                tasks.cancel()
+                task.cancel()
 
         await asyncio.sleep(1.0)
         missing_tasks = set(ld.hosts) - set(tasks)
