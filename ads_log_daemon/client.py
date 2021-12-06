@@ -183,10 +183,22 @@ class LDAPHelper:
         host_prefixes=LOG_DAEMON_HOST_PREFIXES,
     ):
         self.client = ldap.initialize(server)
+        self.server = server
         self.hosts = {}
         self.base = base
         self.host_prefixes = host_prefixes
         self._last_hosts = set()
+
+    def duplicate(self):  # -> __copy__
+        """Create a new LDAP helper with the same settings."""
+        helper = type(self)(
+            server=self.server,
+            base=self.base,
+            host_prefixes=list(self.host_prefixes),
+        )
+        helper.hosts = dict(self.hosts)
+        helper._last_hosts = set(self._last_hosts)
+        return helper
 
     def update_hosts(self):
         """
@@ -605,6 +617,8 @@ async def main_ldap(handler: logging.Handler):
                 LOG_DAEMON_SEARCH_PERIOD * 2,
             )
             await asyncio.sleep(LOG_DAEMON_SEARCH_PERIOD * 2)
+            # Re-initialize the LDAP helper
+            ld = ld.duplicate()
             continue
 
         for host in removed_hosts:
