@@ -5,7 +5,7 @@ from setuptools import find_packages, setup
 
 import versioneer
 
-min_version = (3, 9)
+min_version = (3, 8)
 
 if sys.version_info < min_version:
     error = """
