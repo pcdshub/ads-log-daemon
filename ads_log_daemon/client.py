@@ -81,7 +81,7 @@ from .ldap_helper import LDAPHelper
 DESCRIPTION = __doc__
 
 MSG_CLOCK_SETTINGS_BAD = (
-    "{plc_name} clock settings incorrect. Off by approximately {dt} seconds. "
+    "{name} clock settings incorrect. Off by approximately {dt} seconds. "
     "Log daemon will use its system timestamp."
 )
 
@@ -218,7 +218,7 @@ def to_logstash(
         "id": 0,  # hmm
         "event_class": "C0FFEEC0-FFEE-COFF-EECO-FFEEC0FFEEC0",
         "msg": msg,
-        "plc": plc_identifier.plc_name,
+        "plc": plc_identifier.name,
         "source": f"logging.aggregator/{subsystem}",
         "event_type": 3,  # 3=message_sent
         "json": json.dumps(custom_json),
@@ -271,26 +271,49 @@ class PlcInformation:
     as in ``update_device_info``.
     """
 
+    #: The PLC Net ID
     net_id: str
+    #: The PLC IP address (or hostname)
     address: str
+    #: The PLC hostname
     host_name: str
-    plc_name: Optional[str] = None
+    #: The name of the PLC according to TwinCAT
+    name: Optional[str] = None
+    #: The device version.
     version: Optional[str] = None
+    #: The running project application name.
     application_name: Optional[str] = None
+    #: The PLC name according to device information.
     device_info_name: Optional[str] = None
+    #: The loaded project name.
     project_name: Optional[str] = None
+    #: If the clock is set incorrectly (or significantly different) to
+    #: ads-log-daemon.
     clock_incorrect: Optional[bool] = None
+    #: The task names running on the PLC.
     task_names: List[str] = dataclasses.field(default_factory=list)
+    #: Metadata from LDAP about the PLC host, if available.
     ldap_metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    #: Information retrieved from the UDP PLC service port.
     service_info: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    #: The service port indicated that its data came from here.
     service_ams_port: Optional[int] = None
+    #: Number of attempts it took to get the PLC to respond to a service
+    #: status query.
     service_query_fail_count: int = 0
 
     @property
     def tcp_address_tuple(self) -> Tuple[str, int]:
         return (self.address, constants.ADS_TCP_SERVER_PORT)
 
-    def asdict(self):
+    def asdict(self) -> Dict[str, Any]:
+        """
+        PlcInformation items as a dictionary, excluding None values.
+
+        Returns
+        -------
+        Dict[str, Any]
+        """
         skip_keys = {
             "service_query_fail_count",
             "service_info",
@@ -311,7 +334,7 @@ class PlcInformation:
         timeout: float = 2.0,
     ):
         """
-        async wrapper around the annoyingly synchronous UDP tools in ads-async
+        async wrapper around the annoyingly synchronous UDP tools in ads-async.
         """
 
         def inner():
@@ -361,6 +384,10 @@ class PlcInformation:
             )
             self.net_id = source_net_id
 
+        plc_name = service_info.get("plc_name", None)
+        if plc_name is not None:
+            self.name = plc_name
+
         self.service_info = service_info
         return service_info
 
@@ -385,7 +412,6 @@ class PlcInformation:
         )
 
         new_info = {
-            "plc_name": self.plc_name,
             "version": "{}.{}.{}".format(*device_info.version.as_tuple),
             "device_info_name": device_info.name,
             "project_name": project_name,
@@ -407,7 +433,7 @@ class PlcInformation:
                 was_text = ""
             logger.info(
                 "%s information updated %s=%s%s",
-                self.plc_name,
+                self.name,
                 attr,
                 value,
                 was_text,
@@ -429,7 +455,7 @@ class ClientLogger:
     client: Optional[AsyncioClientConnection]
     circuit: Optional[AsyncioClientCircuit]
     plc: PlcInformation
-    keepalive_task: Optional[asyncio.Task]
+    _log_task: asyncio.Task()
     running: bool
 
     def __init__(
@@ -450,7 +476,6 @@ class ClientLogger:
         self.circuit = None
         self.udp_queue = None
         self.ldap_metadata = dict(ldap_metadata or {})
-        self.keepalive_task = None
         self.running = False
         self.plc = PlcInformation(
             net_id=their_net_id or f"{their_host}.1.1",
@@ -458,6 +483,7 @@ class ClientLogger:
             host_name=self.ldap_metadata.get("host_name", their_host),
             ldap_metadata=dict(ldap_metadata or {}),
         )
+        self._log_task = asyncio.Task()
 
     async def run(self):
         """Connect to the PLC via ads-async and run the logging loop."""
@@ -474,14 +500,54 @@ class ClientLogger:
         if self.add_route:
             await self._add_route()
 
-        async with Client(
-            self.plc.tcp_address_tuple, our_net_id=self.our_net_id
-        ) as self.client:
-            async with self.client.get_circuit(self.plc.net_id) as self.circuit:
-                try:
-                    await self._log_loop()
-                except asyncio.CancelledError:
-                    logger.debug("%s task cancelled", self.plc.address)
+        async def start_logging():
+            try:
+                await self._log_loop()
+            except asyncio.CancelledError:
+                logger.warning(
+                    "Log task canceled for %s (%s)", self.plc.name, self.plc.host_name
+                )
+            finally:
+                logger.warning(
+                    "Log task exiting for %s (%s)", self.plc.name, self.plc.host_name
+                )
+
+        async def keepalive():
+            try:
+                while self.running:
+                    circuit = self.circuit
+                    if circuit is None:
+                        break
+                    await asyncio.wait_for(
+                        self.plc.update_device_info(circuit), timeout=30.0
+                    )
+                    await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                logger.warning(
+                    "Keepalive task canceled for %s (%s)",
+                    self.plc.name,
+                    self.plc.host_name,
+                )
+            finally:
+                logger.warning(
+                    "Keepalive task exiting for %s (%s)",
+                    self.plc.name,
+                    self.plc.host_name,
+                )
+
+        try:
+            async with Client(
+                self.plc.tcp_address_tuple, our_net_id=self.our_net_id
+            ) as self.client:
+                async with self.client.get_circuit(self.plc.net_id) as self.circuit:
+                    log_task = asyncio.create_task(start_logging())
+                    try:
+                        await keepalive()
+                    except asyncio.CancelledError:
+                        logger.debug("%s task cancelled", self.plc.address)
+                    log_task.cancel()
+        finally:
+            self.running = False
 
     async def log(self, message: Dict[str, Any]):
         """Ship a message to logstash via the UDP queue."""
@@ -582,7 +648,7 @@ class ClientLogger:
         await self.plc.update_service_information()
         await self.log(
             create_status_message(
-                message=f"Logging daemon connected to and monitoring {self.plc.plc_name!r}",
+                message=f"Logging daemon connected to and monitoring {self.plc.name!r}",
                 custom_json=self.plc.asdict(),
             )
         )
@@ -619,10 +685,10 @@ class ClientLogger:
         self.client = None
         self.circuit = None
 
-        keepalive = self.keepalive_task
-        if keepalive is not None:
-            keepalive.cancel()
-            self.keepalive_task = None
+        log_task = self._log_task
+        if log_task is not None:
+            log_task.cancel()
+            self._log_task = None
 
 
 async def main_manual(handler: logging.Handler, client_addresses: List[str]):
