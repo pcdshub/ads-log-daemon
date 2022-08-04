@@ -84,7 +84,7 @@ def guess_subsystem(host: str) -> str:
         return "PythonLogDaemon"
 
 
-class _UdpProtocol(asyncio.Protocol):
+class _UdpProtocol(asyncio.DatagramProtocol):
     def __init__(self):
         self.transport = None
 
@@ -357,13 +357,7 @@ class PlcInformation:
         app_name = await get_or_fallback(circuit.get_app_name(), "")
         task_names = await get_or_fallback(circuit.get_task_names(), [])
 
-        logger.info(
-            "Updating device information of %s: %s (version=%s name=%s)",
-            self.host_name,
-            self.service_info,
-            device_info.version,
-            device_info.name,
-        )
+        logger.info("Updating device information of %s", self.host_name)
 
         new_info = {
             "version": "{}.{}.{}".format(*device_info.version.as_tuple),
