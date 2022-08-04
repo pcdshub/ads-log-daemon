@@ -54,6 +54,7 @@ import ads_async
 from .client import ClientLogger
 from .config import LOG_DAEMON_SEARCH_PERIOD
 from .ldap_helper import LDAPHelper
+from .logstash import udp_transport_loop
 
 DESCRIPTION = __doc__
 
@@ -67,8 +68,12 @@ async def main_manual(handler: logging.Handler, client_addresses: List[str]):
         logger.error("No client addresses given; exiting")
         return
 
-    clients = [ClientLogger(handler, addr) for addr in client_addresses]
+    udp_queue = asyncio.Queue()
+    clients = [
+        ClientLogger(handler, addr, udp_queue=udp_queue) for addr in client_addresses
+    ]
     tasks = [asyncio.create_task(client.run()) for client in clients]
+    tasks.append(asyncio.create_task(udp_transport_loop(udp_queue)))
     await asyncio.gather(*tasks)
 
 
@@ -100,50 +105,63 @@ async def main_ldap(handler: logging.Handler):
 
     logger_clients = {}
 
-    while True:
-        logger.info("Looking for new hosts with LDAP...")
-        try:
-            removed_hosts, _ = ld.update_hosts()
-        except Exception:
-            logger.exception(
-                "Failed to update LDAP hosts. Waiting for twice the "
-                "normal search period (= %s seconds).",
-                LOG_DAEMON_SEARCH_PERIOD * 2,
-            )
-            await asyncio.sleep(LOG_DAEMON_SEARCH_PERIOD * 2)
-            # Re-initialize the LDAP helper
-            ld = ld.duplicate()
-            continue
+    udp_queue = asyncio.Queue()
+    queue_task = asyncio.create_task(udp_transport_loop(udp_queue))
 
-        for host in removed_hosts:
-            task = tasks.pop(host, None)
-            if task is not None:
-                task.cancel()
+    try:
+        while True:
+            logger.info("Looking for new hosts with LDAP...")
+            try:
+                removed_hosts, _ = ld.update_hosts()
+            except Exception:
+                logger.exception(
+                    "Failed to update LDAP hosts. Waiting for twice the "
+                    "normal search period (= %s seconds).",
+                    LOG_DAEMON_SEARCH_PERIOD * 2,
+                )
+                await asyncio.sleep(LOG_DAEMON_SEARCH_PERIOD * 2)
+                # Re-initialize the LDAP helper
+                ld = ld.duplicate()
+                continue
 
-        await asyncio.sleep(1.0)
-        missing_tasks = set(ld.hosts) - set(tasks)
-        for host in missing_tasks:
-            info = ld.hosts[host]
-            logger.info("New host: %s", describe_host(host))
-            client = ClientLogger(handler, info["ip_address"], ldap_metadata=info)
-            logger_clients[host] = client
-            tasks[host] = asyncio.create_task(client.run(), name=f"log_{host}")
+            for host in removed_hosts:
+                task = tasks.pop(host, None)
+                if task is not None:
+                    task.cancel()
 
-        try:
-            for coro in asyncio.as_completed(
-                set(tasks.values()), timeout=LOG_DAEMON_SEARCH_PERIOD
-            ):
-                try:
-                    await coro
-                except asyncio.TimeoutError:
-                    raise
-                except Exception:
-                    await prune_tasks()
-        except asyncio.TimeoutError:
-            ...
+            await asyncio.sleep(1.0)
+            missing_tasks = set(ld.hosts) - set(tasks)
 
-        await prune_tasks()
-        await asyncio.sleep(1.0)
+            for host in missing_tasks:
+                info = ld.hosts[host]
+                logger.info("New host: %s", describe_host(host))
+                client = ClientLogger(
+                    handler,
+                    info["ip_address"],
+                    ldap_metadata=info,
+                    udp_queue=udp_queue,
+                )
+                logger_clients[host] = client
+                tasks[host] = asyncio.create_task(client.run(), name=f"log_{host}")
+
+            try:
+                for coro in asyncio.as_completed(
+                    set(tasks.values()), timeout=LOG_DAEMON_SEARCH_PERIOD
+                ):
+                    try:
+                        await coro
+                    except asyncio.TimeoutError:
+                        raise
+                    except Exception:
+                        await prune_tasks()
+            except asyncio.TimeoutError:
+                ...
+
+            await prune_tasks()
+            await asyncio.sleep(1.0)
+    finally:
+        if queue_task is not None:
+            queue_task.cancel()
 
 
 def build_argparser():

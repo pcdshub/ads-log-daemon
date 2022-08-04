@@ -21,15 +21,12 @@ from ads_async.bin.route import add_route_to_plc
 from ads_async.exceptions import DisconnectedError, RequestFailedError
 
 from .config import (
-    LOG_DAEMON_ENCODING,
     LOG_DAEMON_HOST,
     LOG_DAEMON_HOST_NAME,
     LOG_DAEMON_INFO_PERIOD,
     LOG_DAEMON_KEEPALIVE,
     LOG_DAEMON_NET_ID,
     LOG_DAEMON_SOURCE_ENCODING,
-    LOG_DAEMON_TARGET_HOST,
-    LOG_DAEMON_TARGET_PORT,
     LOG_DAEMON_TIMESTAMP_THRESHOLD,
 )
 
@@ -83,40 +80,6 @@ def guess_subsystem(host: str) -> str:
         return host.split("-")[1].upper()
     except Exception:
         return "PythonLogDaemon"
-
-
-class _UdpProtocol(asyncio.DatagramProtocol):
-    def __init__(self):
-        self.transport = None
-
-    def connection_made(self, transport):
-        self.transport = transport
-
-    def datagram_received(self, data, addr):
-        ...
-
-    def error_received(self, ex):
-        logger.error("UDP error %s", ex)
-
-    def connection_lost(self, ex):
-        logger.error("UDP error / closed? %s", ex)
-
-
-async def udp_transport_loop(queue: asyncio.Queue, host: str, port: int):
-    loop = asyncio.get_running_loop()
-    transport, _ = await loop.create_datagram_endpoint(
-        _UdpProtocol,
-        remote_addr=(host, port),
-    )
-    while True:
-        try:
-            item = await queue.get()
-            json_item = json.dumps(item).encode(LOG_DAEMON_ENCODING)
-            transport.sendto(json_item)
-        except Exception as ex:
-            logger.error("Failed to send message: %s", ex)
-            logger.debug("Failed to send message: %s", ex, exc_info=True)
-            await asyncio.sleep(0.01)
 
 
 def to_custom_json(
@@ -427,6 +390,7 @@ class ClientLogger:
         self,
         handler: logging.Handler,
         their_host: str,
+        udp_queue: asyncio.Queue,
         their_net_id: Optional[str] = None,
         our_net_id: Optional[str] = None,
         add_log_filter: bool = True,
@@ -439,7 +403,7 @@ class ClientLogger:
         self.our_net_id = our_net_id or LOG_DAEMON_NET_ID
         self.client = None
         self.circuit = None
-        self.udp_queue = None
+        self.udp_queue = udp_queue
         self.ldap_metadata = dict(ldap_metadata or {})
         self.running = False
         self.plc = PlcInformation(
@@ -535,14 +499,6 @@ class ClientLogger:
 
     async def log(self, message: Dict[str, Any]):
         """Ship a message to logstash via the UDP queue."""
-        if self.udp_queue is None:
-            self.udp_queue = asyncio.Queue()
-            asyncio.create_task(
-                udp_transport_loop(
-                    self.udp_queue, LOG_DAEMON_TARGET_HOST, LOG_DAEMON_TARGET_PORT
-                )
-            )
-
         await self.udp_queue.put(message)
 
     async def _add_route(self):
