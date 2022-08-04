@@ -323,12 +323,21 @@ class PlcInformation:
         self.service_info = service_info
         return service_info
 
-    async def update_device_info(self, circuit: AsyncioClientCircuit) -> Dict[str, Any]:
+    async def update_device_info(
+        self, circuit: AsyncioClientCircuit
+    ) -> Tuple[str, Dict[str, Any]]:
         """
         Update device information (project name, task names, etc.)
 
         Requires an active connection to the PLC via ads-async's
         AsyncioClientCircuit.
+
+        Returns
+        -------
+        change_desc : str
+            User-friendly description of the changes.
+        changes : dict[str, Any]
+            The individual changes.
         """
         device_info = await circuit.get_device_information()
         project_name = await get_or_fallback(circuit.get_project_name(), "")
@@ -353,7 +362,7 @@ class PlcInformation:
         }
 
         if not changes:
-            return changes
+            return "", {}
 
         def get_change_description(attr: str, old_value: Any, new_value: Any) -> str:
             attr = attr.replace("_", " ").capitalize()
@@ -369,7 +378,7 @@ class PlcInformation:
         for attr, (_, new) in changes.items():
             setattr(self, attr, new)
 
-        return changes
+        return change_description, changes
 
 
 class ClientLogger:
@@ -460,11 +469,8 @@ class ClientLogger:
         async def keepalive():
             try:
                 while self.running:
-                    circuit = self.circuit
-                    if circuit is None:
-                        break
-                    await asyncio.wait_for(
-                        self.plc.update_device_info(circuit),
+                    await self._update_device_info(
+                        circuit=circuit,
                         timeout=LOG_DAEMON_KEEPALIVE,
                     )
                     await asyncio.sleep(LOG_DAEMON_KEEPALIVE)
@@ -486,13 +492,23 @@ class ClientLogger:
                 self.plc.tcp_address_tuple, our_net_id=self.our_net_id
             ) as client:
                 self.client = client
-                async with client.get_circuit(self.plc.net_id) as self.circuit:
+                async with client.get_circuit(self.plc.net_id) as circuit:
+                    self.circuit = circuit
                     log_task = asyncio.create_task(start_logging())
                     self._log_task = log_task
                     try:
                         await keepalive()
                     except DisconnectedError:
                         logger.debug("Disconnected from plc: %s", self.plc.description)
+                        await self.log(
+                            create_status_message(
+                                message=(
+                                    f"PLC disconnected from logging daemon: "
+                                    f"{self.plc.description}"
+                                ),
+                                custom_json=self.plc.asdict(),
+                            )
+                        )
                     except asyncio.CancelledError:
                         logger.debug("Task canceled for %s", self.plc.description)
                     log_task.cancel()
@@ -500,6 +516,9 @@ class ClientLogger:
             if client is not None:
                 try:
                     await client.close()
+                except OSError:
+                    # Actually disconnected; don't worry
+                    ...
                 except Exception:
                     logger.warning(
                         "Failed to close client for %s",
@@ -509,6 +528,35 @@ class ClientLogger:
             self.client = None
             self.circuit = None
             self.running = False
+
+    async def _update_device_info(
+        self,
+        timeout: float = LOG_DAEMON_KEEPALIVE,
+        circuit: Optional[AsyncioClientCircuit] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Update the device information and log any changes.
+        """
+        if circuit is None:
+            circuit = self.circuit
+            if circuit is None:
+                return
+
+        change_desc, changes = await asyncio.wait_for(
+            self.plc.update_device_info(circuit),
+            timeout=timeout,
+        )
+        if change_desc:
+            await self.log(
+                create_status_message(
+                    message=(
+                        f"PLC settings may have changed: {self.plc.name!r}: "
+                        f"{change_desc}"
+                    ),
+                    custom_json=self.plc.asdict(),
+                )
+            )
+        return changes
 
     async def log(self, message: Dict[str, Any]):
         """Ship a message to logstash via the UDP queue."""
