@@ -6,6 +6,7 @@ import datetime
 import enum
 import json
 import logging
+import random
 import time
 from typing import Any, Dict, List, Optional, Tuple, cast
 
@@ -461,6 +462,7 @@ class ClientLogger:
                     ex.__class__.__name__,
                 )
             finally:
+                self.running = False
                 logger.warning(
                     "Log task exiting for %s",
                     self.plc.description,
@@ -481,12 +483,14 @@ class ClientLogger:
                     ex.__class__.__name__,
                 )
             finally:
+                self.running = False
                 logger.warning(
                     "Keepalive exiting for %s",
                     self.plc.description,
                 )
 
         client = None
+        log_task = None
         try:
             async with Client(
                 self.plc.tcp_address_tuple, our_net_id=self.our_net_id
@@ -494,6 +498,15 @@ class ClientLogger:
                 self.client = client
                 async with client.get_circuit(self.plc.net_id) as circuit:
                     self.circuit = circuit
+                    # TODO: I think handles may clash between connections somehow?
+                    # Start these off beyond the default of 100.
+                    # Either that or we're just supposed to ignore messages bound
+                    # for other destinations... ?
+                    starting_counter = random.randint(500, 65535)
+                    circuit.circuit._handle_counter.value = starting_counter
+                    circuit.circuit._notification_counter.value = starting_counter
+                    circuit.circuit._invoke_counter.value = starting_counter
+
                     log_task = asyncio.create_task(start_logging())
                     self._log_task = log_task
                     try:
@@ -511,8 +524,11 @@ class ClientLogger:
                         )
                     except asyncio.CancelledError:
                         logger.debug("Task canceled for %s", self.plc.description)
-                    log_task.cancel()
+        except Exception:
+            logger.exception("Unexpected failure for %s", self.plc.description)
         finally:
+            if log_task is not None:
+                log_task.cancel()
             if client is not None:
                 try:
                     await client.close()
