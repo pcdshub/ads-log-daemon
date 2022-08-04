@@ -1,7 +1,3 @@
-from ._version import get_versions
+from . import _version
 
-__version__ = get_versions()['version']
-del get_versions
-
-# TODO: fill this in with appropriate star imports:
-__all__ = []
+__version__ = _version.get_versions()["version"]

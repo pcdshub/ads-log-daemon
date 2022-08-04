@@ -5,7 +5,7 @@ from setuptools import find_packages, setup
 
 import versioneer
 
-min_version = (3, 6)
+min_version = (3, 8)
 
 if sys.version_info < min_version:
     error = """
@@ -58,10 +58,11 @@ setup(
         "interpretation by logstash."
     ),
     long_description=readme,
+    long_description_content_type="text/x-rst",
     url="https://github.com/pcdshub/ads-log-daemon",
     entry_points={
         "console_scripts": [
-            "ads-log-daemon=ads_log_daemon.client:main",
+            "ads-log-daemon=ads_log_daemon.main:main",
         ],
     },
     include_package_data=True,
