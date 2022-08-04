@@ -257,6 +257,20 @@ class PlcInformation:
     service_query_fail_count: int = 0
 
     @property
+    def description(self) -> str:
+        """Text description for logging purposes."""
+        info = [
+            f"PLC at {self.address}",
+        ]
+        if self.host_name != self.address:
+            info.append(f"({self.host_name})")
+        if self.name != self.host_name:
+            info.append(f"PLC {self.name!r}")
+        if self.application_name != self.name:
+            info.append(f"running application {self.application_name!r}")
+        return " ".join(info)
+
+    @property
     def tcp_address_tuple(self) -> Tuple[str, int]:
         return (self.address, constants.ADS_TCP_SERVER_PORT)
 
@@ -445,7 +459,7 @@ class ClientLogger:
             )
 
         plc_info = await self.plc.update_service_information()
-        logger.debug("Host: %s Got PLC info: %s", self.plc.address, plc_info)
+        logger.debug("Host: %s Got PLC info: %s", self.plc.description, plc_info)
 
         if self.add_route:
             await self._add_route()
@@ -455,11 +469,13 @@ class ClientLogger:
                 await self._log_loop()
             except asyncio.CancelledError:
                 logger.warning(
-                    "Log task canceled for %s (%s)", self.plc.name, self.plc.host_name
+                    "Log task canceled for %s",
+                    self.plc.description,
                 )
             finally:
                 logger.warning(
-                    "Log task exiting for %s (%s)", self.plc.name, self.plc.host_name
+                    "Log task exiting for %s",
+                    self.plc.description,
                 )
 
         async def keepalive():
@@ -474,30 +490,41 @@ class ClientLogger:
                     await asyncio.sleep(30)
             except asyncio.CancelledError:
                 logger.warning(
-                    "Keepalive task canceled for %s (%s)",
-                    self.plc.name,
-                    self.plc.host_name,
+                    "Keepalive canceled for %s",
+                    self.plc.description,
                 )
             finally:
                 logger.warning(
-                    "Keepalive task exiting for %s (%s)",
-                    self.plc.name,
-                    self.plc.host_name,
+                    "Keepalive exiting for %s",
+                    self.plc.description,
                 )
 
+        client = None
         try:
             async with Client(
                 self.plc.tcp_address_tuple, our_net_id=self.our_net_id
-            ) as self.client:
-                async with self.client.get_circuit(self.plc.net_id) as self.circuit:
+            ) as client:
+                self.client = client
+                async with client.get_circuit(self.plc.net_id) as self.circuit:
                     log_task = asyncio.create_task(start_logging())
                     self._log_task = log_task
                     try:
                         await keepalive()
                     except asyncio.CancelledError:
-                        logger.debug("%s task cancelled", self.plc.address)
+                        logger.debug("Task canceled for %s", self.plc.description)
                     log_task.cancel()
         finally:
+            if client is not None:
+                try:
+                    await client.close()
+                except Exception:
+                    logger.warning(
+                        "Failed to close client for %s",
+                        self.plc.description,
+                        exc_info=True,
+                    )
+            self.client = None
+            self.circuit = None
             self.running = False
 
     async def log(self, message: Dict[str, Any]):
@@ -522,10 +549,10 @@ class ClientLogger:
                 source_name=LOG_DAEMON_HOST,
                 route_name=LOG_DAEMON_HOST,  # LOG_DAEMON_ROUTE_NAME
             )
-            logger.info("Added route to PLC %s", self.plc.host_name)
+            logger.info("Added route to PLC %s", self.plc.description)
             return result
 
-        logger.info("Adding route to PLC %s in background...", self.plc.address)
+        logger.info("Adding route to PLC in background: %s", self.plc.description)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, inner)
 
@@ -575,7 +602,7 @@ class ClientLogger:
         """
         logger.info(
             "%s Log message %s ==> %s",
-            self.plc.host_name,
+            self.plc.description,
             message,
             to_logstash(self.plc, header, message),
         )
@@ -611,7 +638,7 @@ class ClientLogger:
         await circuit.prune_unknown_notifications()
         logger.info(
             "%s: Enabling the log system and waiting for messages...",
-            self.plc.host_name,
+            self.plc.description,
         )
 
         notification = circuit.enable_log_system()
@@ -624,7 +651,7 @@ class ClientLogger:
             except Exception:
                 logger.exception(
                     "%s Bad log message sample or failed to send: %s",
-                    self.plc.host_name,
+                    self.plc.description,
                     sample,
                 )
 
