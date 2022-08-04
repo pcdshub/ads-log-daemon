@@ -18,7 +18,7 @@ from ads_async.asyncio.client import (
 )
 from ads_async.bin.info import get_plc_info as _get_plc_info
 from ads_async.bin.route import add_route_to_plc
-from ads_async.exceptions import RequestFailedError
+from ads_async.exceptions import DisconnectedError, RequestFailedError
 
 from .config import (
     LOG_DAEMON_ENCODING,
@@ -264,9 +264,9 @@ class PlcInformation:
         ]
         if self.host_name != self.address:
             info.append(f"({self.host_name})")
-        if self.name != self.host_name:
+        if self.name != self.host_name and self.name is not None:
             info.append(f"PLC {self.name!r}")
-        if self.application_name != self.name:
+        if self.application_name != self.name and self.application_name is not None:
             info.append(f"running application {self.application_name!r}")
         return " ".join(info)
 
@@ -467,10 +467,11 @@ class ClientLogger:
         async def start_logging():
             try:
                 await self._log_loop()
-            except asyncio.CancelledError:
+            except (DisconnectedError, asyncio.CancelledError) as ex:
                 logger.warning(
-                    "Log task canceled for %s",
+                    "Logging exiting for %s due to %s",
                     self.plc.description,
+                    ex.__class__.__name__,
                 )
             finally:
                 logger.warning(
@@ -488,10 +489,11 @@ class ClientLogger:
                         self.plc.update_device_info(circuit), timeout=30.0
                     )
                     await asyncio.sleep(30)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as ex:
                 logger.warning(
-                    "Keepalive canceled for %s",
+                    "Keepalive exiting for %s due to %s",
                     self.plc.description,
+                    ex.__class__.__name__,
                 )
             finally:
                 logger.warning(
@@ -510,6 +512,8 @@ class ClientLogger:
                     self._log_task = log_task
                     try:
                         await keepalive()
+                    except DisconnectedError:
+                        logger.debug("Disconnected from plc: %s", self.plc.description)
                     except asyncio.CancelledError:
                         logger.debug("Task canceled for %s", self.plc.description)
                     log_task.cancel()
