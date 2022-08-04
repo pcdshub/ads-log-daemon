@@ -228,9 +228,9 @@ class PlcInformation:
         ]
         if self.host_name != self.address:
             info.append(f"({self.host_name})")
-        if self.name != self.host_name and self.name is not None:
+        if self.name != self.host_name and self.name:
             info.append(f"PLC {self.name!r}")
-        if self.application_name != self.name and self.application_name is not None:
+        if self.application_name != self.name and self.application_name:
             info.append(f"running application {self.application_name!r}")
         return " ".join(info)
 
@@ -516,6 +516,7 @@ class ClientLogger:
             if client is not None:
                 try:
                     await client.close()
+                    await client.user_callback_executor.shutdown()
                 except OSError:
                     # Actually disconnected; don't worry
                     ...
