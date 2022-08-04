@@ -368,24 +368,25 @@ class PlcInformation:
             # Can also get like `stLibVersion_Tc3_Module` or for LCLS general, etc.
         }
         changes = {
-            attr: value
+            attr: (getattr(self, attr), value)
             for attr, value in new_info.items()
             if getattr(self, attr, None) != value
         }
 
+        if not changes:
+            return changes
+
+        def get_change_description(attr: str, old_value: Any, new_value: Any) -> str:
+            if old_value is None:
+                return f"{attr} = {new_value!r}"
+            return f"{attr} = {new_value!r} (was {old_value})"
+
+        change_description = ", ".join(
+            get_change_description(attr, old, new)
+            for attr, (old, new) in changes.items()
+        )
+        logger.info("%s information updated: %s", self.name, change_description)
         for attr, value in changes.items():
-            old_value = getattr(self, attr)
-            if old_value is not None:
-                was_text = f" (was: {old_value})"
-            else:
-                was_text = ""
-            logger.info(
-                "%s information updated %s=%s%s",
-                self.name,
-                attr,
-                value,
-                was_text,
-            )
             setattr(self, attr, value)
 
         return changes
