@@ -377,7 +377,8 @@ class PlcInformation:
             return changes
 
         def get_change_description(attr: str, old_value: Any, new_value: Any) -> str:
-            if old_value is None:
+            attr = attr.replace("_", " ").capitalize()
+            if old_value is None or old_value in ([], ""):
                 return f"{attr} = {new_value!r}"
             return f"{attr} = {new_value!r} (was {old_value})"
 
@@ -386,8 +387,8 @@ class PlcInformation:
             for attr, (old, new) in changes.items()
         )
         logger.info("%s information updated: %s", self.name, change_description)
-        for attr, value in changes.items():
-            setattr(self, attr, value)
+        for attr, (_, new) in changes.items():
+            setattr(self, attr, new)
 
         return changes
 
