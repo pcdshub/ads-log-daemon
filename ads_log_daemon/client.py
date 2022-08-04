@@ -25,6 +25,7 @@ from .config import (
     LOG_DAEMON_HOST,
     LOG_DAEMON_HOST_NAME,
     LOG_DAEMON_INFO_PERIOD,
+    LOG_DAEMON_KEEPALIVE,
     LOG_DAEMON_NET_ID,
     LOG_DAEMON_SOURCE_ENCODING,
     LOG_DAEMON_TARGET_HOST,
@@ -486,9 +487,10 @@ class ClientLogger:
                     if circuit is None:
                         break
                     await asyncio.wait_for(
-                        self.plc.update_device_info(circuit), timeout=30.0
+                        self.plc.update_device_info(circuit),
+                        timeout=LOG_DAEMON_KEEPALIVE,
                     )
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(LOG_DAEMON_KEEPALIVE)
             except asyncio.CancelledError as ex:
                 logger.warning(
                     "Keepalive exiting for %s due to %s",

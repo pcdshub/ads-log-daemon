@@ -27,6 +27,7 @@ Encoding for the generated logstash JSON messages:
 
 Reach out to a PLC by its service port at this rate:
     LOG_DAEMON_INFO_PERIOD (defaults to 60 seconds)
+    LOG_DAEMON_KEEPALIVE (defaults to 120 seconds)
 
 LDAP settings:
     LOG_DAEMON_SEARCH_PERIOD (defaults to 900 seconds or 15 minutes)

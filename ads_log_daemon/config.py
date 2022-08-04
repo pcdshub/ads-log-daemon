@@ -40,3 +40,6 @@ LOG_DAEMON_LDAP_SEARCH_BASE = os.environ.get(
 LOG_DAEMON_TIMESTAMP_THRESHOLD = int(
     os.environ.get("LOG_DAEMON_TIMESTAMP_THRESHOLD", 60)
 )
+# Query the PLC for project updates at this rate - this acts as a keepalive
+# for the connection:
+LOG_DAEMON_KEEPALIVE = int(os.environ.get("LOG_DAEMON_KEEPALIVE", 120))
