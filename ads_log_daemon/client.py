@@ -333,7 +333,8 @@ class PlcInformation:
         device_info = await circuit.get_device_information()
         project_name = await get_or_fallback(circuit.get_project_name(), "")
         app_name = await get_or_fallback(circuit.get_app_name(), "")
-        task_names = await get_or_fallback(circuit.get_task_names(), [])
+        task_id_to_name = await get_or_fallback(circuit.get_task_names(), {})
+        task_names = list(task_id_to_name.values())
 
         logger.info("Updating device information of %s", self.host_name)
 
@@ -376,14 +377,25 @@ class ClientLogger:
     Per-PLC ads-async asyncio client-based logging.
     """
 
-    handler: logging.Handler
-    our_net_id: str
-    add_log_filter: bool
-    add_route: bool
-    client: Optional[AsyncioClientConnection]
-    circuit: Optional[AsyncioClientCircuit]
+    #: PLC Information container for the target.
     plc: PlcInformation
+    #: Time that the client was created.
+    creation_time: float
+    #: The Net ID the log daemon will report.
+    our_net_id: str
+    #: Add a filter to the following log handler if set:
+    add_log_filter: bool
+    #: Logging handler.
+    handler: logging.Handler
+    #: Add a route to the PLC if set.
+    add_route: bool
+    #: The ads-async client instance.
+    client: Optional[AsyncioClientConnection]
+    #: The ads-async client's circuit.
+    circuit: Optional[AsyncioClientCircuit]
+    #: The log task happening in the background.
     _log_task: Optional[asyncio.Task]
+    #: Whether or not the client loop is running.
     running: bool
 
     def __init__(
@@ -397,6 +409,7 @@ class ClientLogger:
         add_route: bool = True,
         ldap_metadata: Optional[dict] = None,
     ):
+        self.creation_time = time.monotonic()
         self.handler = handler
         self.add_log_filter = add_log_filter
         self.add_route = add_route

@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import time
 from typing import List
 
 import ads_async
@@ -100,6 +101,14 @@ async def main_ldap(handler: logging.Handler):
                 logger.info("Removing dead task for %s", describe_host(host))
                 tasks.pop(host)
                 if client is not None:
+                    logger_clients.pop(host)
+                    await client.stop()
+            elif client is not None and not client.running:
+                if (time.monotonic() - client.creation_time) > 10:
+                    logger.info("Client no longer running for %s", describe_host(host))
+                    task = tasks.pop(host)
+                    if task is not None:
+                        task.cancel()
                     logger_clients.pop(host)
                     await client.stop()
 
@@ -157,8 +166,9 @@ async def main_ldap(handler: logging.Handler):
             except asyncio.TimeoutError:
                 ...
 
+            await asyncio.sleep(0.5)
             await prune_tasks()
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.5)
     finally:
         if queue_task is not None:
             queue_task.cancel()
