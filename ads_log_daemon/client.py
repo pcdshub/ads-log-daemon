@@ -281,11 +281,11 @@ class PlcInformation:
     name: Optional[str] = None
     #: The device version.
     version: Optional[str] = None
-    #: The running project application name.
+    #: The running project application name (TwinCAT_SystemInfoVarList._AppInfo.AppName)
     application_name: Optional[str] = None
-    #: The PLC name according to device information.
+    #: The PLC name according to device information (AdsDeviceInfoRequest)
     device_info_name: Optional[str] = None
-    #: The loaded project name.
+    #: The loaded project name (TwinCAT_SystemInfoVarList._AppInfo.ProjectName)
     project_name: Optional[str] = None
     #: If the clock is set incorrectly (or significantly different) to
     #: ads-log-daemon.
@@ -455,7 +455,7 @@ class ClientLogger:
     client: Optional[AsyncioClientConnection]
     circuit: Optional[AsyncioClientCircuit]
     plc: PlcInformation
-    _log_task: asyncio.Task()
+    _log_task: Optional[asyncio.Task]
     running: bool
 
     def __init__(
@@ -483,7 +483,7 @@ class ClientLogger:
             host_name=self.ldap_metadata.get("host_name", their_host),
             ldap_metadata=dict(ldap_metadata or {}),
         )
-        self._log_task = asyncio.Task()
+        self._log_task = None
 
     async def run(self):
         """Connect to the PLC via ads-async and run the logging loop."""
@@ -541,6 +541,7 @@ class ClientLogger:
             ) as self.client:
                 async with self.client.get_circuit(self.plc.net_id) as self.circuit:
                     log_task = asyncio.create_task(start_logging())
+                    self._log_task = log_task
                     try:
                         await keepalive()
                     except asyncio.CancelledError:
@@ -564,14 +565,15 @@ class ClientLogger:
     async def _add_route(self):
         """Add a route for the log daemon to the PLC."""
 
-        def inner():
-            add_route_to_plc(
+        def inner() -> Dict[str, Any]:
+            result = add_route_to_plc(
                 self.plc.address,
                 source_net_id=self.our_net_id,
                 source_name=LOG_DAEMON_HOST,
                 route_name=LOG_DAEMON_HOST,  # LOG_DAEMON_ROUTE_NAME
             )
             logger.info("Added route to PLC %s", self.plc.host_name)
+            return result
 
         logger.info("Adding route to PLC %s in background...", self.plc.address)
         loop = asyncio.get_running_loop()
