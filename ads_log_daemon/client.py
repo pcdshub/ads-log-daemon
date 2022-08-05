@@ -675,8 +675,6 @@ class ClientLogger:
         if circuit is None:
             return
 
-        await self.plc.update_service_information()
-
         await self.log(
             create_status_message(
                 message=f"Logging daemon now monitoring {self.plc.description}",
