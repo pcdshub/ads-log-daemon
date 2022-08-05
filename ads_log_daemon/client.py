@@ -534,6 +534,12 @@ class ClientLogger:
         finally:
             if log_task is not None:
                 log_task.cancel()
+
+                try:
+                    await log_task
+                except Exception:
+                    ...
+
             self.client = None
             self.circuit = None
             self.running = False
@@ -712,4 +718,8 @@ class ClientLogger:
         log_task = self._log_task
         if log_task is not None:
             log_task.cancel()
+            try:
+                await log_task
+            except Exception:
+                ...
             self._log_task = None

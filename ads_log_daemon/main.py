@@ -176,7 +176,7 @@ class LdapLogger:
                     task.cancel()
                     try:
                         await task
-                    except asyncio.CancelledError:
+                    except Exception:
                         ...
 
     async def run(self):
@@ -226,7 +226,7 @@ class LdapLogger:
                     task.cancel()
                     try:
                         await task
-                    except asyncio.CancelledError:
+                    except Exception:
                         ...
 
 
