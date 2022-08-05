@@ -92,7 +92,6 @@ class LdapLogger:
         self.ld = LDAPHelper()
         self.host_info = {}
         self.host_to_task = {}
-        self.udp_queue = asyncio.Queue()
         self.recently_removed_hosts = set()
         self.ldap_update_deadline = time.monotonic()
 
@@ -141,7 +140,7 @@ class LdapLogger:
             self.host_to_task.pop(host, None)
             if client is not None:
                 logger.info(
-                    "Removing dead task for %s (task result=%s)",
+                    "Removing dead task for %s",
                     self.describe_host(host),
                 )
                 await client.stop()
@@ -175,13 +174,24 @@ class LdapLogger:
                         "Host %s was removed from LDAP; canceling its task", host
                     )
                     task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        ...
 
     async def run(self):
         """Run the daemon using the configured LDAP settings to search for PLCs."""
+        # Remember: the queue has to be created in a coroutine associated with
+        # the event loop.
+        self.udp_queue = asyncio.Queue()
         local_tasks = [
-            asyncio.create_task(udp_transport_loop(self.udp_queue), name="queue_task"),
             asyncio.create_task(
-                self._show_connection_status_loop(), name="connection_status"
+                udp_transport_loop(self.udp_queue),
+                name="queue_task",
+            ),
+            asyncio.create_task(
+                self._show_connection_status_loop(),
+                name="connection_status",
             ),
         ]
         try:
@@ -214,6 +224,10 @@ class LdapLogger:
             for task in local_tasks:
                 if task is not None:
                     task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        ...
 
 
 def build_argparser():
