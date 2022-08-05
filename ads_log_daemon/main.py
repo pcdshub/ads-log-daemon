@@ -152,7 +152,7 @@ class LdapLogger:
         logger.info("Looking for new hosts with LDAP...")
         self.ldap_update_deadline = time.monotonic() + LOG_DAEMON_SEARCH_PERIOD
         try:
-            self.recently_removed_hosts, _ = self.ld.update_hosts()
+            self.recently_removed_hosts, _ = self.ld.update_hosts_async()
         except Exception:
             logger.exception(
                 "Failed to update LDAP hosts. Waiting for twice the "
