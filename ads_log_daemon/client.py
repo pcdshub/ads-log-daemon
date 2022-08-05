@@ -476,7 +476,7 @@ class ClientLogger:
                         timeout=LOG_DAEMON_KEEPALIVE,
                     )
                     await asyncio.sleep(LOG_DAEMON_KEEPALIVE)
-            except asyncio.CancelledError as ex:
+            except (TimeoutError, asyncio.CancelledError) as ex:
                 logger.warning(
                     "Keepalive exiting for %s due to %s",
                     self.plc.description,

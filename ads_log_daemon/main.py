@@ -192,6 +192,7 @@ async def main_ldap(handler: logging.Handler):
             await prune_tasks()
             await asyncio.sleep(0.5)
     finally:
+        logger.info("ldap_main exiting; cleaning up tasks...")
         for task in local_tasks:
             if task is not None:
                 task.cancel()
