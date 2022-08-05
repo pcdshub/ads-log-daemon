@@ -134,7 +134,7 @@ async def main_ldap(handler: logging.Handler):
     udp_queue = asyncio.Queue()
     queue_task = asyncio.create_task(udp_transport_loop(udp_queue), name="queue_task")
     connection_status_task = asyncio.create_task(
-        show_connection_status, name="connection_status"
+        show_connection_status(), name="connection_status"
     )
     local_tasks = [queue_task, connection_status_task]
 
