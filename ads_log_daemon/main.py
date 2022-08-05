@@ -98,7 +98,15 @@ async def main_ldap(handler: logging.Handler):
         for host, task in list(tasks.items()):
             client = logger_clients.get(host, None)
             if task.done():
-                logger.info("Removing dead task for %s", describe_host(host))
+                try:
+                    task_result = task.result()
+                except Exception as ex:
+                    task_result = ex
+                logger.info(
+                    "Removing dead task for %s (task result=%s)",
+                    describe_host(host),
+                    task_result,
+                )
                 tasks.pop(host)
                 if client is not None:
                     logger_clients.pop(host)
@@ -112,10 +120,23 @@ async def main_ldap(handler: logging.Handler):
                     logger_clients.pop(host)
                     await client.stop()
 
+    async def show_connection_status():
+        while True:
+            hosts = ", ".join(list(tasks))
+            logger.info("PLC hosts being monitored: num=%d %s", len(tasks), hosts)
+            try:
+                await asyncio.sleep(120)
+            except asyncio.CancelledError:
+                break
+
     logger_clients = {}
 
     udp_queue = asyncio.Queue()
-    queue_task = asyncio.create_task(udp_transport_loop(udp_queue))
+    queue_task = asyncio.create_task(udp_transport_loop(udp_queue), name="queue_task")
+    connection_status_task = asyncio.create_task(
+        show_connection_status, name="connection_status"
+    )
+    local_tasks = [queue_task, connection_status_task]
 
     try:
         while True:
@@ -134,6 +155,7 @@ async def main_ldap(handler: logging.Handler):
                 continue
 
             for host in removed_hosts:
+                logger.info("Host %s was removed from LDAP; canceling its task", host)
                 task = tasks.pop(host, None)
                 if task is not None:
                     task.cancel()
@@ -143,7 +165,7 @@ async def main_ldap(handler: logging.Handler):
 
             for host in missing_tasks:
                 info = ld.hosts[host]
-                logger.info("New host: %s", describe_host(host))
+                logger.info("New host to monitor: %s", describe_host(host))
                 client = ClientLogger(
                     handler,
                     info["ip_address"],
@@ -155,7 +177,7 @@ async def main_ldap(handler: logging.Handler):
 
             try:
                 for coro in asyncio.as_completed(
-                    set(tasks.values()), timeout=LOG_DAEMON_SEARCH_PERIOD
+                    list(tasks.values()), timeout=LOG_DAEMON_SEARCH_PERIOD
                 ):
                     try:
                         await coro
@@ -170,8 +192,9 @@ async def main_ldap(handler: logging.Handler):
             await prune_tasks()
             await asyncio.sleep(0.5)
     finally:
-        if queue_task is not None:
-            queue_task.cancel()
+        for task in local_tasks:
+            if task is not None:
+                task.cancel()
 
 
 def build_argparser():

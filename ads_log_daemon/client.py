@@ -509,26 +509,34 @@ class ClientLogger:
 
                     log_task = asyncio.create_task(start_logging())
                     self._log_task = log_task
-                    try:
-                        await keepalive()
-                    except DisconnectedError:
-                        logger.debug("Disconnected from plc: %s", self.plc.description)
-                        await self.log(
-                            create_status_message(
-                                message=(
-                                    f"PLC disconnected from logging daemon: "
-                                    f"{self.plc.description}"
-                                ),
-                                custom_json=self.plc.asdict(),
-                            )
-                        )
-                    except asyncio.CancelledError:
-                        logger.debug("Task canceled for %s", self.plc.description)
-        except Exception:
-            logger.exception("Unexpected failure for %s", self.plc.description)
+                    await keepalive()
+        except DisconnectedError:
+            logger.debug("Disconnected from plc: %s", self.plc.description)
+            await self.log(
+                create_status_message(
+                    message=(
+                        f"PLC disconnected from logging daemon: "
+                        f"{self.plc.description}"
+                    ),
+                    custom_json=self.plc.asdict(),
+                )
+            )
+        except asyncio.CancelledError:
+            logger.debug("Task canceled for %s", self.plc.description)
+        except Exception as ex:
+            logger.exception(
+                "Unexpected failure for %s: %s %s",
+                self.plc.description,
+                ex.__class__.__name__,
+                ex,
+            )
+            raise
         finally:
             if log_task is not None:
                 log_task.cancel()
+            self.client = None
+            self.circuit = None
+            self.running = False
             if client is not None:
                 try:
                     await client.close()
@@ -542,9 +550,6 @@ class ClientLogger:
                         self.plc.description,
                         exc_info=True,
                     )
-            self.client = None
-            self.circuit = None
-            self.running = False
 
     async def _update_device_info(
         self,
