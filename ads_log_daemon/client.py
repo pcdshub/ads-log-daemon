@@ -7,7 +7,7 @@ import enum
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, Optional, Tuple, cast
 
 import ads_async
 from ads_async import constants, structs
@@ -239,7 +239,7 @@ class PlcInformation:
     #: ads-log-daemon.
     clock_incorrect: Optional[bool] = None
     #: The task names running on the PLC.
-    task_names: List[str] = dataclasses.field(default_factory=list)
+    tasks: str = ""
     #: Metadata from LDAP about the PLC host, if available.
     ldap_metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
     #: Information retrieved from the UDP PLC service port.
@@ -373,17 +373,15 @@ class PlcInformation:
             device_info = await circuit.get_device_information()
             project_name = await get_or_fallback(circuit.get_project_name(), "")
             app_name = await get_or_fallback(circuit.get_app_name(), "")
-            task_id_to_name = await get_or_fallback(circuit.get_task_names(), {})
+            tasks = await get_or_fallback(circuit.get_task_names(), {})
         except (asyncio.TimeoutError, DisconnectedError) as ex:
             raise DisconnectedError(f"Unable to read device information: {ex}") from ex
-
-        task_names = list(task_id_to_name.values())
 
         new_info = {
             "version": "{}.{}.{}".format(*device_info.version.as_tuple),
             "device_info_name": device_info.name,
             "project_name": project_name,
-            "task_names": task_names,
+            "tasks": ", ".join(tasks.values()),
             "application_name": app_name,
             # Can also get like `stLibVersion_Tc3_Module` or for LCLS general, etc.
         }
