@@ -300,7 +300,7 @@ class PlcInformation:
             try:
                 return next(_get_plc_info(plc_hostname, timeout=timeout))
             except StopIteration:
-                raise TimeoutError() from None
+                raise asyncio.TimeoutError() from None
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, inner)
@@ -318,7 +318,7 @@ class PlcInformation:
                 service_info = await self._get_plc_info_via_service_port_async(
                     self.address
                 )
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 self.service_query_fail_count += 1
                 if (self.service_query_fail_count % 60) == 0:
                     # First time and every hour, maybe.
@@ -371,7 +371,7 @@ class PlcInformation:
             project_name = await get_or_fallback(circuit.get_project_name(), "")
             app_name = await get_or_fallback(circuit.get_app_name(), "")
             task_id_to_name = await get_or_fallback(circuit.get_task_names(), {})
-        except (TimeoutError, DisconnectedError) as ex:
+        except (asyncio.TimeoutError, DisconnectedError) as ex:
             raise DisconnectedError(f"Unable to read device information: {ex}") from ex
 
         task_names = list(task_id_to_name.values())
@@ -554,7 +554,7 @@ class ClientLogger:
                     timeout=LOG_DAEMON_KEEPALIVE,
                 )
                 await asyncio.sleep(LOG_DAEMON_KEEPALIVE)
-        except (TimeoutError, DisconnectedError, asyncio.CancelledError) as ex:
+        except (asyncio.TimeoutError, DisconnectedError, asyncio.CancelledError) as ex:
             logger.warning(
                 "Keepalive exiting for %s due to %s %s",
                 self.plc.description,
