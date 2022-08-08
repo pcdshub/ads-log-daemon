@@ -6,7 +6,6 @@ import datetime
 import enum
 import json
 import logging
-import random
 import time
 from typing import Any, Dict, List, Optional, Tuple, cast
 
@@ -475,15 +474,6 @@ class ClientLogger:
         self, client: AsyncioClientConnection, circuit: AsyncioClientCircuit
     ) -> None:
         """Run on initial connection to the PLC."""
-        # TODO: I think handles may clash between connections somehow?
-        # Start these off beyond the default of 100.
-        # Either that or we're just supposed to ignore messages bound
-        # for other destinations... ?
-        starting_counter = random.randint(500, 65535)
-        circuit.circuit._handle_counter.value = starting_counter
-        circuit.circuit._notification_counter.value = starting_counter
-        circuit.circuit._invoke_counter.value = starting_counter
-
         await self._update_device_info(
             circuit=circuit,
             timeout=2.0,
