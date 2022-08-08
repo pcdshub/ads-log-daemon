@@ -26,7 +26,7 @@ LOG_DAEMON_INFO_PERIOD = int(os.environ.get("LOG_DAEMON_INFO_PERIOD", "60"))
 # Search LDAP at this rate (every 15 mins) for new/removed hosts:
 LOG_DAEMON_SEARCH_PERIOD = int(os.environ.get("LOG_DAEMON_SEARCH_PERIOD", "900"))
 # Reconnect to disconnected PLCs at this rate (2 minutes):
-LOG_DAEMON_RECONNECT_PERIOD = int(os.environ.get("LOG_DAEMON_RECONNECT_PERIOD", "120"))
+LOG_DAEMON_RECONNECT_PERIOD = int(os.environ.get("LOG_DAEMON_RECONNECT_PERIOD", "300"))
 
 LOG_DAEMON_HOST_PREFIXES = os.environ.get(
     "LOG_DAEMON_HOST_PREFIXES", "plc-*,bhc-*"
