@@ -129,9 +129,13 @@ def to_logstash(
     if severity is None:
         severity = MessageType(int(message.unknown)).to_severity()
 
+    # TODO: always using system time for now
+    # timestamp = time.time() if use_system_time else message.timestamp.timestamp()
+    timestamp = time.time()
+
     return {
         "schema": "twincat-event-0",
-        "ts": time.time() if use_system_time else message.timestamp.timestamp(),
+        "ts": timestamp,
         "severity": severity,
         "id": 0,  # hmm
         "event_class": "C0FFEEC0-FFEE-COFF-EECO-FFEEC0FFEEC0",
