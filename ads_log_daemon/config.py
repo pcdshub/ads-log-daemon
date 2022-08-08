@@ -1,5 +1,7 @@
+import ipaddress
 import os
 import socket
+import sys
 
 # Host and AMS Net ID of the daemon:
 LOG_DAEMON_HOST = os.environ.get("LOG_DAEMON_HOST", "172.21.32.90")
@@ -45,3 +47,10 @@ LOG_DAEMON_TIMESTAMP_THRESHOLD = int(
 # Query the PLC for project updates at this rate - this acts as a keepalive
 # for the connection:
 LOG_DAEMON_KEEPALIVE = int(os.environ.get("LOG_DAEMON_KEEPALIVE", 120))
+
+
+try:
+    ipaddress.IPv4Address(LOG_DAEMON_HOST)
+except Exception:
+    print(f"Invalid configuration setting: LOG_DAEMON_HOST={LOG_DAEMON_HOST}")
+    sys.exit(1)
