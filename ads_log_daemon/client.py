@@ -589,8 +589,12 @@ class ClientLogger:
                     log_task = asyncio.create_task(self._start_logging(client, circuit))
                     self._log_task = log_task
                     await self._keepalive(client, circuit)
-        except DisconnectedError:
-            logger.debug("Disconnected from plc: %s", self.plc.description)
+        except (asyncio.TimeoutError, DisconnectedError) as ex:
+            logger.debug(
+                "Disconnected from plc (%s): %s",
+                ex.__class__.__name__,
+                self.plc.description,
+            )
             if connection_initialized:
                 await self.log(
                     create_status_message(
