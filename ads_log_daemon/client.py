@@ -482,6 +482,8 @@ class ClientLogger:
             circuit=circuit,
             timeout=2.0,
         )
+        # Wait a bit for old notificationst to come in
+        await asyncio.sleep(1.0)
 
     async def _start_logging(
         self, client: AsyncioClientConnection, circuit: AsyncioClientCircuit
@@ -491,16 +493,19 @@ class ClientLogger:
             await self._log_loop(client, circuit)
         except (DisconnectedError, asyncio.CancelledError) as ex:
             logger.warning(
-                "Logging exiting for %s due to %s",
+                "Logging for %s exiting due to %s",
                 self.plc.description,
                 ex.__class__.__name__,
             )
+        except Exception as ex:
+            logger.exception(
+                "Logging for %s exiting unexpectedly due to %s",
+                self.plc.description,
+                ex.__class__.__name__,
+            )
+            raise
         finally:
             self.running = False
-            logger.warning(
-                "Log task exiting for %s",
-                self.plc.description,
-            )
 
     async def _log_loop(
         self, client: AsyncioClientConnection, circuit: AsyncioClientCircuit
@@ -514,9 +519,7 @@ class ClientLogger:
             )
         )
 
-        # Give some time for initial notifications, and prune any stale
-        # ones from previous sessions:
-        await asyncio.sleep(1.0)
+        # Prune any stale notifications from previous sessions:
         await circuit.prune_unknown_notifications()
         logger.info(
             "%s: Enabling the log system and waiting for messages...",
@@ -555,12 +558,16 @@ class ClientLogger:
                 ex.__class__.__name__,
                 ex,
             )
+            raise
+        except Exception as ex:
+            logger.exception(
+                "Logging keepalive for %s exiting unexpectedly due to %s",
+                self.plc.description,
+                ex.__class__.__name__,
+            )
+            raise
         finally:
             self.running = False
-            logger.warning(
-                "Keepalive exiting for %s",
-                self.plc.description,
-            )
 
     async def run(self):
         """Connect to the PLC via ads-async and run the logging loop."""
