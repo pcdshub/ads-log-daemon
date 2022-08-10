@@ -7,7 +7,7 @@ import enum
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, Optional, Tuple, cast
 
 import ads_async
 from ads_async import constants, structs
@@ -21,15 +21,12 @@ from ads_async.bin.route import add_route_to_plc
 from ads_async.exceptions import DisconnectedError, RequestFailedError
 
 from .config import (
-    LOG_DAEMON_ENCODING,
     LOG_DAEMON_HOST,
     LOG_DAEMON_HOST_NAME,
     LOG_DAEMON_INFO_PERIOD,
     LOG_DAEMON_KEEPALIVE,
     LOG_DAEMON_NET_ID,
     LOG_DAEMON_SOURCE_ENCODING,
-    LOG_DAEMON_TARGET_HOST,
-    LOG_DAEMON_TARGET_PORT,
     LOG_DAEMON_TIMESTAMP_THRESHOLD,
 )
 
@@ -85,40 +82,6 @@ def guess_subsystem(host: str) -> str:
         return "PythonLogDaemon"
 
 
-class _UdpProtocol(asyncio.DatagramProtocol):
-    def __init__(self):
-        self.transport = None
-
-    def connection_made(self, transport):
-        self.transport = transport
-
-    def datagram_received(self, data, addr):
-        ...
-
-    def error_received(self, ex):
-        logger.error("UDP error %s", ex)
-
-    def connection_lost(self, ex):
-        logger.error("UDP error / closed? %s", ex)
-
-
-async def udp_transport_loop(queue: asyncio.Queue, host: str, port: int):
-    loop = asyncio.get_running_loop()
-    transport, _ = await loop.create_datagram_endpoint(
-        _UdpProtocol,
-        remote_addr=(host, port),
-    )
-    while True:
-        try:
-            item = await queue.get()
-            json_item = json.dumps(item).encode(LOG_DAEMON_ENCODING)
-            transport.sendto(json_item)
-        except Exception as ex:
-            logger.error("Failed to send message: %s", ex)
-            logger.debug("Failed to send message: %s", ex, exc_info=True)
-            await asyncio.sleep(0.01)
-
-
 def to_custom_json(
     header: structs.AoEHeader, message: structs.AdsNotificationLogMessage
 ) -> dict:
@@ -166,9 +129,13 @@ def to_logstash(
     if severity is None:
         severity = MessageType(int(message.unknown)).to_severity()
 
+    # TODO: always using system time for now
+    # timestamp = time.time() if use_system_time else message.timestamp.timestamp()
+    timestamp = time.time()
+
     return {
         "schema": "twincat-event-0",
-        "ts": time.time() if use_system_time else message.timestamp.timestamp(),
+        "ts": timestamp,
         "severity": severity,
         "id": 0,  # hmm
         "event_class": "C0FFEEC0-FFEE-COFF-EECO-FFEEC0FFEEC0",
@@ -185,7 +152,33 @@ def create_status_message(
     *,
     custom_json: Optional[dict] = None,
     severity: Optional[int] = None,
-) -> dict:
+    source_detail: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Create a logging.aggregator status message for logstash.
+
+    Parameters
+    ----------
+    message : str
+        The message to send to logstash.
+    custom_json : dict, optional
+        Custom JSON to serialize and send to logstash.
+    severity : int, optional
+        Severity level for the message.
+    source_detail : str, optional
+        Details about the source of the message.
+        Formatted as: ``logging.aggregator/LogDaemon.{source_detail}``.
+
+    Returns
+    -------
+    loggable_obj : dict
+        Serializable dictionary that conforms to the TwinCAT event schema.
+    """
+    if source_detail is None:
+        source_suffix = ""
+    else:
+        source_suffix = f".{source_detail}"
+
     return {
         "schema": "twincat-event-0",
         "ts": time.time(),
@@ -194,7 +187,7 @@ def create_status_message(
         "event_class": "C0FFEEC0-FFEE-COFF-EECO-FFEEC0FFEEC1",
         "msg": message,
         "plc": LOG_DAEMON_HOST_NAME,
-        "source": "logging.aggregator/LogDaemon",
+        "source": f"logging.aggregator/LogDaemon{source_suffix}",
         "event_type": 3,  # 3=message_sent
         "json": json.dumps(custom_json or {}),
     }
@@ -246,7 +239,7 @@ class PlcInformation:
     #: ads-log-daemon.
     clock_incorrect: Optional[bool] = None
     #: The task names running on the PLC.
-    task_names: List[str] = dataclasses.field(default_factory=list)
+    tasks: str = ""
     #: Metadata from LDAP about the PLC host, if available.
     ldap_metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
     #: Information retrieved from the UDP PLC service port.
@@ -265,9 +258,9 @@ class PlcInformation:
         ]
         if self.host_name != self.address:
             info.append(f"({self.host_name})")
-        if self.name != self.host_name and self.name is not None:
+        if self.name != self.host_name and self.name:
             info.append(f"PLC {self.name!r}")
-        if self.application_name != self.name and self.application_name is not None:
+        if self.application_name != self.name and self.application_name:
             info.append(f"running application {self.application_name!r}")
         return " ".join(info)
 
@@ -310,7 +303,7 @@ class PlcInformation:
             try:
                 return next(_get_plc_info(plc_hostname, timeout=timeout))
             except StopIteration:
-                raise TimeoutError() from None
+                raise asyncio.TimeoutError() from None
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, inner)
@@ -328,7 +321,7 @@ class PlcInformation:
                 service_info = await self._get_plc_info_via_service_port_async(
                     self.address
                 )
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 self.service_query_fail_count += 1
                 if (self.service_query_fail_count % 60) == 0:
                     # First time and every hour, maybe.
@@ -360,25 +353,35 @@ class PlcInformation:
         self.service_info = service_info
         return service_info
 
-    async def update_device_info(self, circuit: AsyncioClientCircuit) -> Dict[str, Any]:
+    async def update_device_info(
+        self, circuit: AsyncioClientCircuit
+    ) -> Tuple[str, Dict[str, Any]]:
         """
         Update device information (project name, task names, etc.)
 
         Requires an active connection to the PLC via ads-async's
         AsyncioClientCircuit.
-        """
-        device_info = await circuit.get_device_information()
-        project_name = await get_or_fallback(circuit.get_project_name(), "")
-        app_name = await get_or_fallback(circuit.get_app_name(), "")
-        task_names = await get_or_fallback(circuit.get_task_names(), [])
 
-        logger.info("Updating device information of %s", self.host_name)
+        Returns
+        -------
+        change_desc : str
+            User-friendly description of the changes.
+        changes : dict[str, Any]
+            The individual changes.
+        """
+        try:
+            device_info = await circuit.get_device_information()
+            project_name = await get_or_fallback(circuit.get_project_name(), "")
+            app_name = await get_or_fallback(circuit.get_app_name(), "")
+            tasks = await get_or_fallback(circuit.get_task_names(), {})
+        except (asyncio.TimeoutError, DisconnectedError) as ex:
+            raise DisconnectedError(f"Unable to read device information: {ex}") from ex
 
         new_info = {
             "version": "{}.{}.{}".format(*device_info.version.as_tuple),
             "device_info_name": device_info.name,
             "project_name": project_name,
-            "task_names": task_names,
+            "tasks": ", ".join(tasks.values()),
             "application_name": app_name,
             # Can also get like `stLibVersion_Tc3_Module` or for LCLS general, etc.
         }
@@ -388,8 +391,14 @@ class PlcInformation:
             if getattr(self, attr, None) != value
         }
 
+        logger.info(
+            "Updated device information of %s: %s",
+            self.host_name,
+            ", ".join(f"{attr} = {value!r}" for attr, value in new_info.items()),
+        )
+
         if not changes:
-            return changes
+            return "", {}
 
         def get_change_description(attr: str, old_value: Any, new_value: Any) -> str:
             attr = attr.replace("_", " ").capitalize()
@@ -405,7 +414,7 @@ class PlcInformation:
         for attr, (_, new) in changes.items():
             setattr(self, attr, new)
 
-        return changes
+        return change_description, changes
 
 
 class ClientLogger:
@@ -413,33 +422,46 @@ class ClientLogger:
     Per-PLC ads-async asyncio client-based logging.
     """
 
-    handler: logging.Handler
-    our_net_id: str
-    add_log_filter: bool
-    add_route: bool
-    client: Optional[AsyncioClientConnection]
-    circuit: Optional[AsyncioClientCircuit]
+    #: PLC Information container for the target.
     plc: PlcInformation
+    #: Time that the client was created.
+    creation_time: float
+    #: The Net ID the log daemon will report.
+    our_net_id: str
+    #: Add a filter to the following log handler if set:
+    add_log_filter: bool
+    #: Logging handler.
+    handler: logging.Handler
+    #: Add a route to the PLC if set.
+    add_route: bool
+    #: The ads-async client instance.
+    client: Optional[AsyncioClientConnection]
+    #: The ads-async client's circuit.
+    circuit: Optional[AsyncioClientCircuit]
+    #: The log task happening in the background.
     _log_task: Optional[asyncio.Task]
+    #: Whether or not the client loop is running.
     running: bool
 
     def __init__(
         self,
         handler: logging.Handler,
         their_host: str,
+        udp_queue: asyncio.Queue,
         their_net_id: Optional[str] = None,
         our_net_id: Optional[str] = None,
         add_log_filter: bool = True,
         add_route: bool = True,
         ldap_metadata: Optional[dict] = None,
     ):
+        self.creation_time = time.monotonic()
         self.handler = handler
         self.add_log_filter = add_log_filter
         self.add_route = add_route
         self.our_net_id = our_net_id or LOG_DAEMON_NET_ID
         self.client = None
         self.circuit = None
-        self.udp_queue = None
+        self.udp_queue = udp_queue
         self.ldap_metadata = dict(ldap_metadata or {})
         self.running = False
         self.plc = PlcInformation(
@@ -449,6 +471,101 @@ class ClientLogger:
             ldap_metadata=dict(ldap_metadata or {}),
         )
         self._log_task = None
+
+    async def _on_connection(
+        self, client: AsyncioClientConnection, circuit: AsyncioClientCircuit
+    ) -> None:
+        """Run on initial connection to the PLC."""
+        await self._update_device_info(
+            circuit=circuit,
+            timeout=2.0,
+        )
+        # Wait a bit for old notificationst to come in
+        await asyncio.sleep(1.0)
+
+    async def _start_logging(
+        self, client: AsyncioClientConnection, circuit: AsyncioClientCircuit
+    ) -> None:
+        """Wrapper around ``_log_loop`` to catch exceptions."""
+        try:
+            await self._log_loop(client, circuit)
+        except (DisconnectedError, asyncio.CancelledError) as ex:
+            logger.warning(
+                "Logging for %s exiting due to %s",
+                self.plc.description,
+                ex.__class__.__name__,
+            )
+        except Exception as ex:
+            logger.exception(
+                "Logging for %s exiting unexpectedly due to %s",
+                self.plc.description,
+                ex.__class__.__name__,
+            )
+            raise
+        finally:
+            self.running = False
+
+    async def _log_loop(
+        self, client: AsyncioClientConnection, circuit: AsyncioClientCircuit
+    ) -> None:
+        """Subscribe to PLC log messages and ship them to logstash."""
+        await self.log(
+            create_status_message(
+                message=f"Logging daemon now monitoring {self.plc.description}",
+                custom_json=self.plc.asdict(),
+                source_detail="connectivity",
+            )
+        )
+
+        # Prune any stale notifications from previous sessions:
+        await circuit.prune_unknown_notifications()
+        logger.info(
+            "%s: Enabling the log system and waiting for messages...",
+            self.plc.description,
+        )
+
+        notification = circuit.enable_log_system()
+        async for header, _, sample in notification:
+            try:
+                header = cast(structs.AoEHeader, header)
+                sample = cast(structs.AdsNotificationSample, sample)
+                message = sample.as_log_message()
+                await self.handle_message(header, message)
+            except Exception:
+                logger.exception(
+                    "%s Bad log message sample or failed to send: %s",
+                    self.plc.description,
+                    sample,
+                )
+
+    async def _keepalive(
+        self, client: AsyncioClientConnection, circuit: AsyncioClientCircuit
+    ):
+        """Keepalive loop for a PLC connection."""
+        try:
+            while self.running:
+                await self._update_device_info(
+                    circuit=circuit,
+                    timeout=LOG_DAEMON_KEEPALIVE,
+                )
+                await asyncio.sleep(LOG_DAEMON_KEEPALIVE)
+        except (asyncio.TimeoutError, DisconnectedError, asyncio.CancelledError) as ex:
+            logger.warning(
+                "Keepalive exiting for %s due to %s %s",
+                self.plc.description,
+                ex.__class__.__name__,
+                ex,
+            )
+            raise
+        except Exception as ex:
+            logger.exception(
+                "Logging keepalive for %s exiting unexpectedly due to %s",
+                self.plc.description,
+                ex.__class__.__name__,
+            )
+            raise
+        finally:
+            self.running = False
 
     async def run(self):
         """Connect to the PLC via ads-async and run the logging loop."""
@@ -465,84 +582,118 @@ class ClientLogger:
         if self.add_route:
             await self._add_route()
 
-        async def start_logging():
-            try:
-                await self._log_loop()
-            except (DisconnectedError, asyncio.CancelledError) as ex:
-                logger.warning(
-                    "Logging exiting for %s due to %s",
-                    self.plc.description,
-                    ex.__class__.__name__,
-                )
-            finally:
-                logger.warning(
-                    "Log task exiting for %s",
-                    self.plc.description,
-                )
-
-        async def keepalive():
-            try:
-                while self.running:
-                    circuit = self.circuit
-                    if circuit is None:
-                        break
-                    await asyncio.wait_for(
-                        self.plc.update_device_info(circuit),
-                        timeout=LOG_DAEMON_KEEPALIVE,
-                    )
-                    await asyncio.sleep(LOG_DAEMON_KEEPALIVE)
-            except asyncio.CancelledError as ex:
-                logger.warning(
-                    "Keepalive exiting for %s due to %s",
-                    self.plc.description,
-                    ex.__class__.__name__,
-                )
-            finally:
-                logger.warning(
-                    "Keepalive exiting for %s",
-                    self.plc.description,
-                )
-
         client = None
+        log_task = None
+        connection_initialized = False
         try:
             async with Client(
                 self.plc.tcp_address_tuple, our_net_id=self.our_net_id
             ) as client:
                 self.client = client
-                async with client.get_circuit(self.plc.net_id) as self.circuit:
-                    log_task = asyncio.create_task(start_logging())
+                async with client.get_circuit(self.plc.net_id) as circuit:
+                    self.circuit = circuit
+
+                    log_task = await self._on_connection(client, circuit)
+                    connection_initialized = True
+                    log_task = asyncio.create_task(self._start_logging(client, circuit))
                     self._log_task = log_task
-                    try:
-                        await keepalive()
-                    except DisconnectedError:
-                        logger.debug("Disconnected from plc: %s", self.plc.description)
-                    except asyncio.CancelledError:
-                        logger.debug("Task canceled for %s", self.plc.description)
-                    log_task.cancel()
+                    await self._keepalive(client, circuit)
+        except (asyncio.TimeoutError, DisconnectedError) as ex:
+            logger.debug(
+                "Disconnected from plc (%s): %s",
+                ex.__class__.__name__,
+                self.plc.description,
+            )
+            if connection_initialized:
+                await self.log(
+                    create_status_message(
+                        message=(
+                            f"PLC disconnected from logging daemon: "
+                            f"{self.plc.description}"
+                        ),
+                        custom_json=self.plc.asdict(),
+                        source_detail="connectivity",
+                    )
+                )
+            else:
+                await self.log(
+                    create_status_message(
+                        message=(
+                            f"Unable to initialize logging for "
+                            f"{self.plc.description}"
+                        ),
+                        custom_json=self.plc.asdict(),
+                        source_detail="connectivity",
+                    )
+                )
+        except asyncio.CancelledError:
+            logger.debug("Task canceled for %s", self.plc.description)
+        except Exception as ex:
+            logger.exception(
+                "Unexpected failure for %s: %s %s",
+                self.plc.description,
+                ex.__class__.__name__,
+                ex,
+            )
+            raise
         finally:
+            if log_task is not None:
+                log_task.cancel()
+
+                try:
+                    await log_task
+                except Exception:
+                    ...
+
+            self.client = None
+            self.circuit = None
+            self.running = False
             if client is not None:
                 try:
                     await client.close()
+                    await client.user_callback_executor.shutdown()
+                except OSError:
+                    # Actually disconnected; don't worry
+                    ...
                 except Exception:
                     logger.warning(
                         "Failed to close client for %s",
                         self.plc.description,
                         exc_info=True,
                     )
-            self.client = None
-            self.circuit = None
-            self.running = False
+
+    async def _update_device_info(
+        self,
+        timeout: float = LOG_DAEMON_KEEPALIVE,
+        circuit: Optional[AsyncioClientCircuit] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Update the device information and log any changes.
+        """
+        if circuit is None:
+            circuit = self.circuit
+            if circuit is None:
+                return
+
+        change_desc, changes = await asyncio.wait_for(
+            self.plc.update_device_info(circuit),
+            timeout=timeout,
+        )
+        if change_desc:
+            await self.log(
+                create_status_message(
+                    message=(
+                        f"PLC settings may have changed: {self.plc.name!r}: "
+                        f"{change_desc}"
+                    ),
+                    custom_json=self.plc.asdict(),
+                    source_detail="settings",
+                )
+            )
+        return changes
 
     async def log(self, message: Dict[str, Any]):
         """Ship a message to logstash via the UDP queue."""
-        if self.udp_queue is None:
-            self.udp_queue = asyncio.Queue()
-            asyncio.create_task(
-                udp_transport_loop(
-                    self.udp_queue, LOG_DAEMON_TARGET_HOST, LOG_DAEMON_TARGET_PORT
-                )
-            )
-
         await self.udp_queue.put(message)
 
     async def _add_route(self):
@@ -623,44 +774,6 @@ class ClientLogger:
             )
         )
 
-    async def _log_loop(
-        self,
-    ):
-        circuit = self.circuit
-        if circuit is None:
-            return
-
-        await self.plc.update_service_information()
-        await self.log(
-            create_status_message(
-                message=f"Logging daemon connected to and monitoring {self.plc.name!r}",
-                custom_json=self.plc.asdict(),
-            )
-        )
-
-        # Give some time for initial notifications, and prune any stale
-        # ones from previous sessions:
-        await asyncio.sleep(1.0)
-        await circuit.prune_unknown_notifications()
-        logger.info(
-            "%s: Enabling the log system and waiting for messages...",
-            self.plc.description,
-        )
-
-        notification = circuit.enable_log_system()
-        async for header, _, sample in notification:
-            try:
-                header = cast(structs.AoEHeader, header)
-                sample = cast(structs.AdsNotificationSample, sample)
-                message = sample.as_log_message()
-                await self.handle_message(header, message)
-            except Exception:
-                logger.exception(
-                    "%s Bad log message sample or failed to send: %s",
-                    self.plc.description,
-                    sample,
-                )
-
     async def stop(self):
         """Stop the logging mechanism."""
         if not self.running:
@@ -673,4 +786,8 @@ class ClientLogger:
         log_task = self._log_task
         if log_task is not None:
             log_task.cancel()
+            try:
+                await log_task
+            except Exception:
+                ...
             self._log_task = None

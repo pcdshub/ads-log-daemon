@@ -1,5 +1,7 @@
+import ipaddress
 import os
 import socket
+import sys
 
 # Host and AMS Net ID of the daemon:
 LOG_DAEMON_HOST = os.environ.get("LOG_DAEMON_HOST", "172.21.32.90")
@@ -23,6 +25,8 @@ LOG_DAEMON_ENCODING = os.environ.get("LOG_DAEMON_ENCODING", "utf-8")
 LOG_DAEMON_INFO_PERIOD = int(os.environ.get("LOG_DAEMON_INFO_PERIOD", "60"))
 # Search LDAP at this rate (every 15 mins) for new/removed hosts:
 LOG_DAEMON_SEARCH_PERIOD = int(os.environ.get("LOG_DAEMON_SEARCH_PERIOD", "900"))
+# Reconnect to disconnected PLCs at this rate (2 minutes):
+LOG_DAEMON_RECONNECT_PERIOD = int(os.environ.get("LOG_DAEMON_RECONNECT_PERIOD", "300"))
 
 LOG_DAEMON_HOST_PREFIXES = os.environ.get(
     "LOG_DAEMON_HOST_PREFIXES", "plc-*,bhc-*"
@@ -43,3 +47,10 @@ LOG_DAEMON_TIMESTAMP_THRESHOLD = int(
 # Query the PLC for project updates at this rate - this acts as a keepalive
 # for the connection:
 LOG_DAEMON_KEEPALIVE = int(os.environ.get("LOG_DAEMON_KEEPALIVE", 120))
+
+
+try:
+    ipaddress.IPv4Address(LOG_DAEMON_HOST)
+except Exception:
+    print(f"Invalid configuration setting: LOG_DAEMON_HOST={LOG_DAEMON_HOST}")
+    sys.exit(1)

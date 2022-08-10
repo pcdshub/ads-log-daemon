@@ -1,3 +1,5 @@
+import asyncio
+
 import ldap
 
 from .config import (
@@ -108,3 +110,20 @@ class LDAPHelper:
 
         self._last_hosts = added_hosts
         return removed_hosts, added_hosts
+
+    async def update_hosts_async(self):
+        """
+        Update hosts dictionary with the LDAP client.
+
+        After an update, refer to the ``.hosts`` dictionary.
+
+        Returns
+        -------
+        removed : set
+            Removed host names.
+
+        added : set
+            Added host names.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.update_hosts)
